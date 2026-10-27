@@ -57,6 +57,7 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 # Defaults, then the user's config on top.
 load_config() {
   STUDIO_SESSION=dev-studio   # named Herdr session for the team; blank = the default one
+  STUDIO_SUPERVISOR=${STUDIO_SUPERVISOR:-launchd}   # launchd (KeepAlive) keeps the Herdr server up; nohup = plain background
   AGENT_KIND=claude           # claude | codex
   ROUTER=jev                  # jev | clef | rules   (jev = TypeSafe's Jev, needs TYPESAFE_API_KEY)
   CLEF_URL=''                 # a System One-compatible endpoint for ROUTER=clef

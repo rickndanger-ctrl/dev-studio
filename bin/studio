@@ -37,12 +37,45 @@ EOF
 
 # --- Herdr helpers -----------------------------------------------------------
 
+# The studio's Herdr server runs under launchd with KeepAlive: a server started
+# from the Dock app's launcher dies when that launcher exits a second later
+# (macOS reaps the app's children), and this way it also restarts after a crash.
+LAUNCHD_LABEL=dev.studio.herdr
+launchd_plist() { printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$LAUNCHD_LABEL"; }
+
+start_server_launchd() {
+  local plist herdr_bin
+  plist=$(launchd_plist); herdr_bin=$(command -v "$HERDR")
+  mkdir -p "$(dirname "$plist")" "$STUDIO_DATA/logs"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LAUNCHD_LABEL</string>
+  <key>ProgramArguments</key><array>
+    <string>$herdr_bin</string><string>--session</string><string>$STUDIO_SESSION</string><string>server</string>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$STUDIO_DATA/logs/herdr-server.log</string>
+  <key>StandardErrorPath</key><string>$STUDIO_DATA/logs/herdr-server.log</string>
+</dict></plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$LAUNCHD_LABEL" 2>/dev/null
+}
+
 ensure_server() {
   hd workspace list >/dev/null 2>&1 && return 0
   say "Waking up Herdr…"
   mkdir -p "$STUDIO_DATA/logs"
-  # nohup needs a real binary, so spell the session flag out instead of using hd.
-  nohup "$HERDR" ${STUDIO_SESSION:+--session "$STUDIO_SESSION"} server >>"$STUDIO_DATA/logs/herdr-server.log" 2>&1 &
+  if [ "${STUDIO_SUPERVISOR:-launchd}" = launchd ] && [ -n "${STUDIO_SESSION:-}" ] && is_macos; then
+    start_server_launchd
+  else
+    # nohup needs a real binary, so spell the session flag out instead of using hd.
+    nohup "$HERDR" ${STUDIO_SESSION:+--session "$STUDIO_SESSION"} server >>"$STUDIO_DATA/logs/herdr-server.log" 2>&1 &
+  fi
   local i=0
   while [ $i -lt 40 ]; do
     hd workspace list >/dev/null 2>&1 && return 0
@@ -509,7 +542,12 @@ cmd_doctor() {
 cmd_stop() {
   printf 'Stop the studio and every agent in it? [y/N] '
   read -r a
-  case $a in y|Y|yes) hd server stop >/dev/null && ok "Studio stopped." ;; *) say "Left running." ;; esac
+  case $a in
+    y|Y|yes)
+      launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1 || true   # or KeepAlive brings it straight back
+      hd server stop >/dev/null 2>&1; ok "Studio stopped." ;;
+    *) say "Left running." ;;
+  esac
 }
 
 load_config
