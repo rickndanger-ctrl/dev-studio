@@ -316,15 +316,20 @@ pick_models() {
 # The studio's own home: a plain git folder the team works from. Projects get
 # cloned or opened from inside it by the architect, so nobody has to pick files.
 ensure_studio_home() {
-  if [ ! -d "$STUDIO_WORKSPACE/.git" ]; then
-    mkdir -p "$STUDIO_WORKSPACE"
-    [ -f "$STUDIO_WORKSPACE/README.md" ] || printf '# Dev Studio\n\nThe team works from here. Ask the architect to clone or open a project.\n' > "$STUDIO_WORKSPACE/README.md"
-    touch "$STUDIO_WORKSPACE/.studio-home"   # created by the studio, so trusting it is ours to decide
-    # Workers branch off this repo with `--worktree`, which needs a first commit.
-    git -C "$STUDIO_WORKSPACE" init -q 2>/dev/null \
-      && git -C "$STUDIO_WORKSPACE" add -A \
-      && git -C "$STUDIO_WORKSPACE" -c user.name="Dev Studio" -c user.email="studio@local" commit -q -m "Dev Studio home" || true
+  [ -d "$STUDIO_WORKSPACE/.git" ] && return 0
+  # Claim the folder as studio-made only when it did not exist or was empty;
+  # a folder with the owner's own files is theirs, and is never auto-trusted.
+  if [ ! -e "$STUDIO_WORKSPACE" ] || [ -z "$(ls -A "$STUDIO_WORKSPACE" 2>/dev/null)" ]; then
+    mkdir -p "$STUDIO_WORKSPACE" && touch "$STUDIO_WORKSPACE/.studio-home"
+  else
+    warn "$STUDIO_WORKSPACE already has files in it, so I won't mark it trusted; Claude may ask you."
   fi
+  [ -f "$STUDIO_WORKSPACE/README.md" ] || printf '# Dev Studio\n\nThe team works from here. Ask the architect to clone or open a project.\n' > "$STUDIO_WORKSPACE/README.md"
+  # Workers branch off this repo with `--worktree`, which needs a first commit;
+  # commit only what the studio wrote.
+  git -C "$STUDIO_WORKSPACE" init -q 2>/dev/null \
+    && git -C "$STUDIO_WORKSPACE" add README.md .studio-home 2>/dev/null \
+    && git -C "$STUDIO_WORKSPACE" -c user.name="Dev Studio" -c user.email="studio@local" commit -q -m "Dev Studio home" || true
 }
 
 kind_title() { case $AGENT_KIND in codex) printf 'Codex' ;; *) printf 'Claude' ;; esac; }
