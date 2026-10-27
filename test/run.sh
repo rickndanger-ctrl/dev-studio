@@ -16,6 +16,8 @@ export STUDIO_DATA=$HOME/.dev-studio STUDIO_CONF=$HOME/.dev-studio/studio.conf
 export STUDIO_SUPERVISOR=nohup   # never touch the real launchd from a test
 mkdir -p "$HOME/Developer/OMAC" "$STUDIO_DATA"
 git -C "$HOME/Developer/OMAC" init -q
+# Worktrees branch from a commit, so the project needs one before any team is opened.
+git -C "$HOME/Developer/OMAC" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
 PROJECT=$HOME/Developer/OMAC
 # Stand-in claude and codex: `studio up` checks they exist, and CI has neither.
 mkdir -p "$T/stub"
@@ -95,6 +97,61 @@ check "architect runs codex"                 has "codex -m gpt-6.1-sol"
 check "codex gets its role as first prompt"  has "omac-architect.md"
 check "agent kind remembered"                grep -q "AGENT_KIND=codex" "$STUDIO_CONF"
 check "team.json says codex"                 grep -q '"kind": *"codex"' "$PROJECT/.studio/team.json"
+
+echo "Mixed team: codex worker-1, claude worker-2"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --workers-mixed
+check "mixed team labelled omac-mixed"       has "--label omac-mixed"
+check "architect stays claude"               has "claude --name omac-architect --model opus"
+check "codex worker-1 runs codex in its worktree" has "worktrees/worker-1 && codex -m gpt-6.1-sol"
+check "claude worker-2 keeps --worktree"     has "claude --name omac-worker-2 --model haiku --worktree worker-2"
+check "codex worker's worktree exists"       test -d "$PROJECT/.claude/worktrees/worker-1"
+check "codex worker's branch exists"         git -C "$PROJECT" rev-parse --verify -q worktree-worker-1
+check "team.json has kinds per role"         jq -e '.kind == "claude" and .kinds.architect == "claude" and .kinds.main == "claude" and .kinds["worker-1"] == "codex" and .kinds["worker-2"] == "claude"' "$PROJECT/.studio/team.json"
+check "peers.json gives each agent its kind" jq -e '.["omac-worker-1"].kind == "codex" and .["omac-worker-2"].kind == "claude"' "$PROJECT/.studio/peers.json"
+check "codex worker gets its codex model"    jq -e '.["omac-worker-1"].model == "gpt-6.1-sol" and .["omac-worker-2"].model == "haiku"' "$PROJECT/.studio/peers.json"
+status_out=$("$ROOT/bin/studio" status "$PROJECT")
+check "status lists worker-1 as codex"       grep -q 'worker-1 *codex' <<<"$status_out"
+check "status lists worker-2 as claude"      grep -q 'worker-2 *claude' <<<"$status_out"
+check "status lists the architect's kind"    grep -q 'architect *claude' <<<"$status_out"
+board_out=$(STUDIO_BOARD_ONCE=1 "$ROOT/bin/studio" board "$PROJECT" 2>&1)
+check "board shows codex worker-1"           grep -q 'codex' <<<"$board_out"
+check "board shows claude worker-2"          grep -q 'claude' <<<"$board_out"
+
+echo "Legacy team.json (no kinds) falls back to its one kind"
+jq 'del(.kinds)' "$PROJECT/.studio/team.json" > "$T/legacy.json" && cp "$T/legacy.json" "$PROJECT/.studio/team.json"
+legacy_out=$("$ROOT/bin/studio" status "$PROJECT")
+check "legacy team.json loads"               grep -q 'architect *claude' <<<"$legacy_out"
+check "legacy workers use the one kind"      sh -c "! grep -q 'codex' <<<'$legacy_out'"
+
+echo "Single architect on codex; workers stay claude"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --architect-kind codex
+check "architect runs codex"                 has "codex -m gpt-6.1-sol"
+check "main stays claude"                    has "claude --name omac-main --model sonnet"
+check "architect kind recorded"              jq -e '.kinds.architect == "codex" and .kinds.main == "claude"' "$PROJECT/.studio/team.json"
+
+echo "No commit yet: a codex worker says so and starts in the project folder"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+mkdir -p "$HOME/Developer/Bare" && git -C "$HOME/Developer/Bare" init -q
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+bare_out=$(STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up Bare --no-attach --worker-kind codex 2>&1)
+check "warns that the worktree couldn't be made" grep -q "Couldn't create the worktree for bare-worker-1" <<<"$bare_out"
+check "worker starts in the project folder"  has "cd $HOME/Developer/Bare && codex -m gpt-6.1-sol"
+
+echo "Mixed flags are checked"
+check "--workers-mixed with --worker-kind is refused" sh -c "! STUDIO_FAKE_MEM_MB=8000 '$ROOT/bin/studio' up OMAC --no-attach --workers-mixed --worker-kind codex >/dev/null 2>&1"
+check "unknown role kind is refused"          sh -c "! STUDIO_FAKE_MEM_MB=8000 '$ROOT/bin/studio' up OMAC --no-attach --main-kind gpt >/dev/null 2>&1"
+
+echo "Web view shows each agent's kind"
+python3 "$ROOT/ui/web.py" --studio "$PROJECT/.studio" --herdr "$HERDR" --port 8796 --name test-mixed \
+  --kinds "architect=claude,main=claude,worker-1=codex,worker-2=claude" > "$T/web-mixed.log" 2>&1 &
+WEB2_PID=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 2 -o /dev/null http://127.0.0.1:8796/health && break; sleep 0.3; done
+check "web state gives worker-1 kind codex"  sh -c "curl -s -m 5 http://127.0.0.1:8796/api/state | python3 -c 'import json,sys; d=json.load(sys.stdin); assert [a[\"kind\"] for a in d[\"agents\"] if a[\"name\"].endswith(\"worker-1\")] == [\"codex\"]'"
+kill "$WEB2_PID" 2>/dev/null; wait "$WEB2_PID" 2>/dev/null || true
 
 echo "Little memory free: workers capped"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"

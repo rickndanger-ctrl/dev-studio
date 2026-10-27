@@ -212,6 +212,24 @@ STATUS_STYLE = {
 }
 
 
+def parse_kinds(text):
+    """'architect=claude,worker-1=codex' -> {'architect': 'claude', 'worker-1': 'codex'}."""
+    out = {}
+    for part in (text or "").split(","):
+        if "=" in part:
+            role, kind = part.split("=", 1)
+            out[role.strip()] = kind.strip()
+    return out
+
+
+def kind_of(name, kinds, fallback):
+    """The CLI an agent runs: the team's kind for its role ('<project>-worker-1' is worker-1)."""
+    for role, kind in kinds.items():
+        if name == role or name.endswith("-" + role):
+            return kind
+    return fallback
+
+
 def status_cell(st, frame):
     color, word = STATUS_STYLE.get(st, (GREY, st))
     if st == "working":
@@ -294,12 +312,15 @@ def render(a, frame, cols, rows_avail):
         return " " * mid + mark + label
 
     W = 64 if cols >= 150 else max(40, min(64, cols - 4))
+    kinds = parse_kinds(getattr(a, "kinds", ""))
     chain = []
     if arch:
-        chain += box("%s · session architect" % (a.arch_model.upper()) + "  " + status_cell(live.get(arch, "offline"), frame), agent_lines(arch, W - 4), W, PURPLE)
+        ak = kind_of(arch, kinds, kind)
+        chain += box("%s · %s · session architect" % (a.arch_model.upper(), ak) + "  " + status_cell(live.get(arch, "offline"), frame), agent_lines(arch, W - 4), W, PURPLE)
         chain.append(channel_line(W, arch, True))
     if main:
-        chain += box("%s · main session" % a.main_model.capitalize() + "  " + status_cell(live.get(main, "offline"), frame), agent_lines(main, W - 4), W, PINK)
+        mk = kind_of(main, kinds, kind)
+        chain += box("%s · %s · main session" % (a.main_model.capitalize(), mk) + "  " + status_cell(live.get(main, "offline"), frame), agent_lines(main, W - 4), W, PINK)
         chain.append(channel_line(W, main, True))
     if last_model:
         lm = last_model
@@ -320,7 +341,9 @@ def render(a, frame, cols, rows_avail):
         wbox_w = max(20, min(30, (W - 2 * (len(workers) - 1)) // len(workers)))
         wboxes = []
         for w in workers:
-            wl = [c(BLUE, a.worker_model.capitalize()) + "  " + status_cell(live.get(w, "offline"), frame)] + agent_lines(w, wbox_w - 4)[:3]
+            wk = kind_of(w, kinds, kind)
+            wmodel = peers.get(w, {}).get("model") or a.worker_model
+            wl = [c(BLUE, "%s · %s" % (wmodel.capitalize(), wk)) + "  " + status_cell(live.get(w, "offline"), frame)] + agent_lines(w, wbox_w - 4)[:3]
             wboxes.append(box(name_of(w), wl, wbox_w, BLUE))
         # fan out: ┴ under the router, ┬ above each worker
         centres = [i * (wbox_w + 2) + wbox_w // 2 for i in range(len(workers))]
@@ -412,6 +435,7 @@ def main():
     p.add_argument("--studio", required=True)
     p.add_argument("--herdr", default="herdr")
     p.add_argument("--kind", default="claude")
+    p.add_argument("--kinds", default="", help="each role's CLI, e.g. architect=claude,worker-1=codex")
     p.add_argument("--arch-model", default="opus")
     p.add_argument("--main-model", default="sonnet")
     p.add_argument("--worker-model", default="haiku")

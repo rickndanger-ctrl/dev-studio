@@ -58,8 +58,13 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 load_config() {
   STUDIO_SESSION=dev-studio   # named Herdr session for the team; blank = the default one
   STUDIO_SUPERVISOR=${STUDIO_SUPERVISOR:-launchd}   # launchd (KeepAlive) keeps the Herdr server up; nohup = plain background
-  AGENT_KIND=claude           # claude | codex
-  ROUTER=jev                  # jev | clef | rules   (jev = TypeSafe's Jev, needs TYPESAFE_API_KEY)
+  AGENT_KIND=claude           # claude | codex (the default kind for every role)
+  KIND_ARCH=$AGENT_KIND       # each role's kind for this team; set by `studio up` flags or team.json
+  KIND_MAIN=$AGENT_KIND
+  KIND_WORKER=$AGENT_KIND     # kind of every worker, unless WORKER_KINDS lists them one by one
+  WORKER_KINDS=''             # e.g. "codex claude": worker-1 codex, worker-2 claude
+  WORKERS_MIXED=0             # 1 = `studio up --workers-mixed` (odd workers codex, even claude)
+  ROUTER=jev                 # jev | clef | rules   (jev = TypeSafe's Jev, needs TYPESAFE_API_KEY)
   CLEF_URL=''                 # a System One-compatible endpoint for ROUTER=clef
   STUDIO_WORKSPACE=$HOME/DevStudio   # the team's own home: `studio up` with no project opens here
   PROJECTS_DIR=$HOME/Developer        # where `studio up --pick` looks for projects

@@ -169,10 +169,12 @@ class Studio:
         routes = [r for r in log if r.get("kind") == "route"]
         deliveries = [r for r in log if r.get("kind") in ("delivered", "held", "failed")]
         agents = []
+        kinds = board.parse_kinds(getattr(self.a, "kinds", ""))
         for n, p in peers.items():
             sent = next((r for r in reversed(routes) if r.get("from") == n), None)
             got = next((r for r in reversed(routes) if n in r.get("to", [])), None)
             agents.append({"name": n, "short": self.short_name(n), "role": role_of(p), "model": p.get("model", ""),
+                           "kind": board.kind_of(n, kinds, p.get("kind", "")),
                            "desc": p.get("role", ""), "status": live.get(n, "offline"), "pane": table.get(n, {}).get("pane", ""),
                            "now": now.get(n, ""), "last_sent": sent, "last_got": got})
         last = routes[-1] if routes else None
@@ -338,6 +340,7 @@ def main():
     p.add_argument("--arch-model", default="opus")
     p.add_argument("--main-model", default="sonnet")
     p.add_argument("--worker-model", default="haiku")
+    p.add_argument("--kinds", default="", help="each role's CLI, e.g. architect=claude,worker-1=codex")
     p.add_argument("--port", type=int, default=8790)
     p.add_argument("--name", default="Dev Studio")
     p.add_argument("--peer", default="", help="URL of the other Mac's board, for the header link")

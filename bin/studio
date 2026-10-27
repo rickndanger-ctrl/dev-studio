@@ -27,6 +27,10 @@ ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
   studio up [--codex|--claude] [--router jev|clef|rules] [--no-attach]
                           open (or reopen) the team in the studio's home (~/DevStudio)
   studio up <project>     the team on a specific project folder; --pick shows a chooser
+  studio up ... [--architect-kind claude|codex] [--main-kind claude|codex]
+                [--worker-kind claude|codex | --workers-mixed]
+                          each role's CLI; --workers-mixed gives codex, claude, codex… workers
+  studio status [project] who is on the team and which CLI each one runs
   studio board            the live board (what the first tab shows)
   studio send FROM TO "note"   send a peer message through the router (TO = @name or auto)
   studio ask "note"       dry run: show what the router would decide
@@ -140,13 +144,35 @@ name_agent() { # pane name
   warn "Herdr hasn't spotted $2 yet, so its pane shows as $1 for now."
 }
 
-# start_agent pane label role name model [worktree]
+# The git worktree a codex worker works in: the same folder and branch claude --worktree
+# makes (.claude/worktrees/<name>, branch worktree-<name>). Reused when both exist;
+# fails (status 1) when git can't make it, e.g. a project with no commit yet.
+ensure_worktree() { # project-dir name
+  local dir="$1/.claude/worktrees/$2" branch="worktree-$2"
+  if git -C "$1" rev-parse --verify -q "$branch" >/dev/null 2>&1; then
+    [ -d "$dir" ] || git -C "$1" worktree add -q "$dir" "$branch" >/dev/null 2>&1
+  else
+    git -C "$1" worktree add -q -b "$branch" ".claude/worktrees/$2" >/dev/null 2>&1
+  fi
+  [ -d "$dir" ] && git -C "$1" rev-parse --verify -q "$branch" >/dev/null 2>&1
+}
+
+# start_agent pane label role name model kind [worktree]
 start_agent() {
-  local pane=$1 label=$2 role=$3 name=$4 model=$5 worktree=${6:-} brief cmd
+  local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir
   brief=$(role_file "$role" "$name")
-  if [ "$AGENT_KIND" = codex ]; then
-    # Codex has no system-prompt flag: the role brief is its first prompt.
-    cmd="codex -m $model $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
+  if [ "$kind" = codex ]; then
+    # Codex has no system-prompt flag: the role brief is its first prompt. A codex worker
+    # gets the same git worktree claude --worktree makes, and codex starts inside it.
+    dir=$PROJECT_DIR
+    if [ -n "$worktree" ]; then
+      if ensure_worktree "$PROJECT_DIR" "$worktree"; then
+        dir=$PROJECT_DIR/.claude/worktrees/$worktree
+      else
+        warn "Couldn't create the worktree for $name; it starts in the project folder instead."
+      fi
+    fi
+    cmd="cd $(printf %q "$dir") && codex -m $model $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
   else
     cmd="claude --name $name --model $model"
     [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
@@ -163,30 +189,119 @@ start_pane_cmd() { # pane label command
   hd pane run "$1" "$3" >/dev/null
 }
 
+# --- Kinds: which CLI each role runs ------------------------------------------------
+# A role's kind is claude or codex. `studio up` sets KIND_ARCH, KIND_MAIN and
+# WORKER_KINDS (one word per worker); team.json keeps them, and load_team reads them
+# back. A team.json from before mixed teams has no "kinds", so every role uses "kind".
+
+# The kind of worker N (1-based).
+worker_kind() {
+  local i=1 k
+  for k in $WORKER_KINDS; do
+    [ "$i" = "$1" ] && { printf '%s' "$k"; return 0; }
+    i=$((i + 1))
+  done
+  printf '%s' "$KIND_WORKER"
+}
+
+# The model a role gets for a kind: claude or codex model settings from the config.
+model_for() { # kind role -> model
+  if [ "$1" = codex ]; then
+    case $2 in architect) printf '%s' "$CODEX_ARCHITECT_MODEL" ;; main) printf '%s' "$CODEX_MAIN_MODEL" ;; *) printf '%s' "$CODEX_WORKER_MODEL" ;; esac
+  else
+    case $2 in architect) printf '%s' "$ARCHITECT_MODEL" ;; main) printf '%s' "$MAIN_MODEL" ;; *) printf '%s' "$WORKER_MODEL" ;; esac
+  fi
+}
+
+# Does any role of this team run this kind? (trust and install checks need it)
+team_uses() {
+  local k
+  for k in $KIND_ARCH $KIND_MAIN $KIND_WORKER $WORKER_KINDS; do [ "$k" = "$1" ] && return 0; done
+  return 1
+}
+
+# "claude", "codex", or "mixed" when the roles run both: names the workspace.
+team_suffix() {
+  local kinds
+  if [ -n "$WORKER_KINDS" ]; then
+    kinds=$(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" $WORKER_KINDS | sort -u)
+  else
+    kinds=$(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER" | sort -u)
+  fi
+  if [ "$(printf '%s\n' "$kinds" | wc -l | tr -d ' ')" = 1 ]; then printf '%s' "$kinds"; else printf 'mixed'; fi
+}
+
+# "architect=claude,main=claude,worker-1=codex,…" for the board and the web view.
+kinds_arg() {
+  local s="architect=$KIND_ARCH,main=$KIND_MAIN" n=1
+  while [ $n -le "$WORKERS" ]; do s="$s,worker-$n=$(worker_kind "$n")"; n=$((n + 1)); done
+  printf '%s' "$s"
+}
+
+# "worker-1 codex, worker-2 claude" for the status line.
+workers_summary() {
+  local s='' n=1
+  while [ $n -le "$WORKERS" ]; do s="$s${s:+, }worker-$n $(worker_kind "$n")"; n=$((n + 1)); done
+  printf '%s' "$s"
+}
+
+# Set the models for the three roles from their kinds (the role's kind is an argument).
+pick_models() { # architect-kind main-kind worker-kind
+  KIND_ARCH=$1; KIND_MAIN=$2; KIND_WORKER=$3
+  ARCH_M=$(model_for "$1" architect); MAIN_M=$(model_for "$2" main); WORKER_M=$(model_for "$3" worker)
+}
+
 # The router and board need to know who is on the team and what each one does.
 write_peers() {
-  local n=1 json
-  json="{\"$PROJECT_SLUG-architect\":{\"role\":\"architect: plans, audits, signs off before merge\",\"model\":\"$ARCH_M\"},"
-  json="$json\"$PROJECT_SLUG-main\":{\"role\":\"main session: builds the feature, syncs schemas, patches dependents\",\"model\":\"$MAIN_M\"}"
+  local n=1 json k
+  json="{\"$PROJECT_SLUG-architect\":{\"role\":\"architect: plans, audits, signs off before merge\",\"model\":\"$ARCH_M\",\"kind\":\"$KIND_ARCH\"},"
+  json="$json\"$PROJECT_SLUG-main\":{\"role\":\"main session: builds the feature, syncs schemas, patches dependents\",\"model\":\"$MAIN_M\",\"kind\":\"$KIND_MAIN\"}"
   while [ $n -le "$WORKERS" ]; do
-    json="$json,\"$PROJECT_SLUG-worker-$n\":{\"role\":\"worker $n: small delegated tasks in its own worktree\",\"model\":\"$WORKER_M\"}"
+    k=$(worker_kind "$n")
+    json="$json,\"$PROJECT_SLUG-worker-$n\":{\"role\":\"worker $n: small delegated tasks in its own worktree\",\"model\":\"$(model_for "$k" worker)\",\"kind\":\"$k\"}"
     n=$((n + 1))
   done
   printf '%s}\n' "$json" | jq . > "$STUDIO_DIR/peers.json"
   jq -n --arg k "$AGENT_KIND" --arg r "$ROUTER" --arg a "$ARCH_M" --arg m "$MAIN_M" --arg w "$WORKER_M" --argjson n "$WORKERS" \
-    '{kind: $k, router: $r, arch_model: $a, main_model: $m, worker_model: $w, workers: $n}' > "$STUDIO_DIR/team.json"
+    --arg ka "$KIND_ARCH" --arg km "$KIND_MAIN" --argjson kinds "$(team_kinds_json)" \
+    '{kind: $k, router: $r, arch_model: $a, main_model: $m, worker_model: $w, workers: $n,
+      kinds: ({architect: $ka, main: $km} + $kinds)}' > "$STUDIO_DIR/team.json"
 }
 
-# A project's team (kind, router, models) is what was launched for it, not
+# {"worker-1": "codex", …} for team.json.
+team_kinds_json() {
+  local s='' n=1
+  while [ $n -le "$WORKERS" ]; do s="$s${s:+,}\"worker-$n\":\"$(worker_kind "$n")\""; n=$((n + 1)); done
+  printf '{%s}' "$s"
+}
+
+# A project's team (kind, kinds, router, models) is what was launched for it, not
 # whatever the config says now: another project may have been opened since.
 load_team() {
-  [ -f "$STUDIO_DIR/team.json" ] || return 0
-  AGENT_KIND=$(jq -r .kind "$STUDIO_DIR/team.json")
-  ROUTER=$(jq -r .router "$STUDIO_DIR/team.json")
-  ARCH_M=$(jq -r .arch_model "$STUDIO_DIR/team.json")
-  MAIN_M=$(jq -r .main_model "$STUDIO_DIR/team.json")
-  WORKER_M=$(jq -r .worker_model "$STUDIO_DIR/team.json")
-  WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
+  local f="$STUDIO_DIR/team.json" n=1 k
+  if [ ! -f "$f" ]; then
+    pick_models "$AGENT_KIND" "$AGENT_KIND" "$AGENT_KIND"
+    WORKER_KINDS=''
+    set_label
+    return 0
+  fi
+  AGENT_KIND=$(jq -r .kind "$f")
+  ROUTER=$(jq -r .router "$f")
+  ARCH_M=$(jq -r .arch_model "$f")
+  MAIN_M=$(jq -r .main_model "$f")
+  WORKER_M=$(jq -r .worker_model "$f")
+  WORKERS=$(jq -r '.workers // 0' "$f")
+  KIND_ARCH=$(jq -r '.kinds.architect // .kind' "$f")
+  KIND_MAIN=$(jq -r '.kinds.main // .kind' "$f")
+  KIND_WORKER=$AGENT_KIND
+  WORKER_KINDS=''
+  while [ $n -le "$WORKERS" ]; do
+    k=$(jq -r --arg w "worker-$n" '.kinds[$w] // .kind' "$f")
+    WORKER_KINDS="$WORKER_KINDS $k"
+    n=$((n + 1))
+  done
+  WORKER_KINDS=${WORKER_KINDS# }
+  set_label
 }
 
 # --- Layout ------------------------------------------------------------------------
@@ -214,7 +329,7 @@ fit_workers() {
 #  │ router       │ worker-2 …   │
 #  └──────────────┴──────────────┘
 layout() {
-  local ws team col router pane next n=1 left TOKEN board
+  local ws team col router pane next n=1 left TOKEN board wk wm
   issue_token "$PROJECT_SLUG-architect"
   # The workspace's --env reaches its root pane only (probed on herdr 0.9.5: a later
   # tab and a split both saw it unset), so this token stays in the architect's pane.
@@ -227,14 +342,15 @@ layout() {
   issue_token "$PROJECT_SLUG-main"
   col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
   write_peers
-  start_agent "$team" "architect · $ARCH_M" architect "$PROJECT_SLUG-architect" "$ARCH_M"
-  start_agent "$col" "main · $MAIN_M" main "$PROJECT_SLUG-main" "$MAIN_M"
+  start_agent "$team" "architect · $ARCH_M · $KIND_ARCH" architect "$PROJECT_SLUG-architect" "$ARCH_M" "$KIND_ARCH"
+  start_agent "$col" "main · $MAIN_M · $KIND_MAIN" main "$PROJECT_SLUG-main" "$MAIN_M" "$KIND_MAIN"
   pane=$col
   while [ $n -le "$WORKERS" ]; do
     left=$((WORKERS - n + 1))
     issue_token "$PROJECT_SLUG-worker-$n"
     next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
-    start_agent "$next" "worker-$n · $WORKER_M" worker "$PROJECT_SLUG-worker-$n" "$WORKER_M" "worker-$n"
+    wk=$(worker_kind "$n"); wm=$(model_for "$wk" worker)
+    start_agent "$next" "worker-$n · $wm · $wk" worker "$PROJECT_SLUG-worker-$n" "$wm" "$wk" "worker-$n"
     pane=$next
     n=$((n + 1))
   done
@@ -303,7 +419,7 @@ team_is_live() {
 # ("Workspace trust not yet accepted") while the architect waits at the dialog.
 trust_project() {
   local f="$HOME/.claude.json" tmp
-  [ "$AGENT_KIND" = claude ] && [ -f "$f" ] || return 0
+  team_uses claude && [ -f "$f" ] || return 0
   # Only a git project the owner picked, never a home folder or a disk root:
   # trusting runs that folder's hooks and settings.
   case $PROJECT_DIR in "$HOME"|/|/Users|/Users/*/) return 0 ;; esac
@@ -379,15 +495,6 @@ open_board_window() {
 
 # --- Commands -------------------------------------------------------------------------
 
-# Models for the chosen agent kind.
-pick_models() {
-  if [ "$AGENT_KIND" = codex ]; then
-    ARCH_M=$CODEX_ARCHITECT_MODEL; MAIN_M=$CODEX_MAIN_MODEL; WORKER_M=$CODEX_WORKER_MODEL
-  else
-    ARCH_M=$ARCHITECT_MODEL; MAIN_M=$MAIN_MODEL; WORKER_M=$WORKER_MODEL
-  fi
-}
-
 # The studio's own home: a plain git folder the team works from. Projects get
 # cloned or opened from inside it by the architect, so nobody has to pick files.
 ensure_studio_home() {
@@ -407,25 +514,36 @@ ensure_studio_home() {
     && git -C "$STUDIO_WORKSPACE" -c user.name="Dev Studio" -c user.email="studio@local" commit -q -m "Dev Studio home" || true
 }
 
-kind_title() { case $AGENT_KIND in codex) printf 'Codex' ;; *) printf 'Claude' ;; esac; }
+# The workspace's name: "<project>-claude", "<project>-codex", or "<project>-mixed".
+set_label() {
+  local suffix title
+  suffix=$(team_suffix)
+  case $suffix in codex) title=Codex ;; claude) title=Claude ;; *) title=Mixed ;; esac
+  if [ "${PROJECT_SLUG:-}" = studio ]; then WS_LABEL="Dev Studio · $title"
+  else WS_LABEL="${PROJECT_SLUG:-studio}-$suffix"; fi
+}
 
 set_project() { # project-arg
   PROJECT_DIR=$(resolve_project "$1")
   [ -n "$PROJECT_DIR" ] || die "Can't find project '$1' (looked in $PROJECTS_DIR)"
   STUDIO_DIR=$PROJECT_DIR/.studio
-  if [ "$PROJECT_DIR" = "$STUDIO_WORKSPACE" ]; then
-    PROJECT_SLUG=studio
-    WS_LABEL="Dev Studio · $(kind_title)"
-  else
-    PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
-    WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
-  fi
+  if [ "$PROJECT_DIR" = "$STUDIO_WORKSPACE" ]; then PROJECT_SLUG=studio
+  else PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")"); fi
+  set_label
 }
 
 cmd_up() {
-  local attach=1 arg='' expect='' pick=0
+  local attach=1 arg='' expect='' pick=0 arg_arch='' arg_main='' arg_worker='' mixed=0 n=1 k
   for a in "$@"; do
-    if [ -n "$expect" ]; then ROUTER=$a; expect=''; continue; fi
+    if [ -n "$expect" ]; then
+      case $expect in
+        router) ROUTER=$a ;;
+        architect-kind) arg_arch=$a ;;
+        main-kind) arg_main=$a ;;
+        worker-kind) arg_worker=$a ;;
+      esac
+      expect=''; continue
+    fi
     case $a in
       --no-attach) attach=0 ;;
       --pick)   pick=1 ;;
@@ -433,14 +551,42 @@ cmd_up() {
       --claude) AGENT_KIND=claude ;;
       --router) expect=router ;;
       --router=*) ROUTER=${a#--router=} ;;
+      --architect-kind) expect=architect-kind ;;
+      --architect-kind=*) arg_arch=${a#--architect-kind=} ;;
+      --main-kind) expect=main-kind ;;
+      --main-kind=*) arg_main=${a#--main-kind=} ;;
+      --worker-kind) expect=worker-kind ;;
+      --worker-kind=*) arg_worker=${a#--worker-kind=} ;;
+      --workers-mixed) mixed=1 ;;
       *) arg=$a ;;
     esac
   done
+  [ -z "$expect" ] || die "$expect needs a value."
   case $ROUTER in jev|clef|rules) ;; *) die "Unknown router '$ROUTER'. Use jev, clef or rules." ;; esac
   case $AGENT_KIND in claude|codex) ;; *) die "Unknown agent kind '$AGENT_KIND'. Use claude or codex." ;; esac
+  for k in "$arg_arch" "$arg_main" "$arg_worker"; do
+    case $k in ''|claude|codex) ;; *) die "Unknown agent kind '$k'. Use claude or codex." ;; esac
+  done
+  [ "$mixed" = 1 ] && [ -n "$arg_worker" ] && die "--workers-mixed and --worker-kind can't be used together."
+  # Each role's kind: the default kind unless a flag names another. Workers either
+  # share one kind, or (--workers-mixed) alternate codex, claude, codex… from worker-1.
+  KIND_ARCH=${arg_arch:-$AGENT_KIND}
+  KIND_MAIN=${arg_main:-$AGENT_KIND}
+  KIND_WORKER=${arg_worker:-$AGENT_KIND}
+  WORKERS_MIXED=$mixed
+  WORKER_KINDS=''
+  if [ "$mixed" = 1 ]; then
+    while [ $n -le "$WORKERS" ]; do
+      if [ $((n % 2)) = 1 ]; then k=codex; else k=claude; fi
+      WORKER_KINDS="$WORKER_KINDS${WORKER_KINDS:+ }$k"
+      n=$((n + 1))
+    done
+  fi
+  for k in $(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER" $WORKER_KINDS | sort -u); do
+    command -v "$k" >/dev/null 2>&1 || die "$k isn't installed."
+  done
   command -v "$HERDR" >/dev/null 2>&1 || die "Herdr isn't installed. Run: brew install herdr"
   command -v jq >/dev/null 2>&1 || die "jq isn't installed. Run: brew install jq"
-  command -v "$AGENT_KIND" >/dev/null 2>&1 || die "$AGENT_KIND isn't installed."
 
   if [ -z "$arg" ] && [ $pick = 1 ]; then
     arg=$(pick_project) || exit 1
@@ -450,7 +596,7 @@ cmd_up() {
     arg=$STUDIO_WORKSPACE
   fi
   set_project "$arg"
-  pick_models
+  pick_models "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER"
   set_config LAST_PROJECT "$PROJECT_DIR"
   set_config AGENT_KIND "$AGENT_KIND"
   set_config ROUTER "$ROUTER"
@@ -469,13 +615,13 @@ cmd_up() {
     ws=''
   fi
   if [ -n "$ws" ]; then
-    ok "The $PROJECT_SLUG team ($AGENT_KIND) is already at work. Opening it…"
+    ok "The $PROJECT_SLUG team ($(team_suffix)) is already at work. Opening it…"
   else
-    say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team: ${C_BOLD}$AGENT_KIND${C_RESET}, router ${C_BOLD}$ROUTER${C_RESET}…"
+    say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team: ${C_BOLD}$(team_suffix)${C_RESET}, router ${C_BOLD}$ROUTER${C_RESET}…"
     fit_workers
     layout
     ws=$WS_ID
-    ok "Team assembled: architect ($ARCH_M), main ($MAIN_M), $WORKERS worker(s) ($WORKER_M), router ($ROUTER)."
+    ok "Team assembled: architect ($KIND_ARCH, $ARCH_M), main ($KIND_MAIN, $MAIN_M), $WORKERS worker(s) ($(workers_summary)), router ($ROUTER)."
     play_sound Glass
   fi
   [ -n "$ws" ] && hd workspace focus "$ws" >/dev/null 2>&1
@@ -489,10 +635,25 @@ cmd_up() {
 cmd_board() {
   local dir=${1:-$LAST_PROJECT}
   [ -n "$dir" ] || die "Which project? studio board /path/to/project"
-  set_project "$dir"; pick_models; load_team
+  set_project "$dir"; load_team
   # shellcheck disable=SC2086
-  exec "$PYTHON" "$STUDIO_HOME/ui/board.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$AGENT_KIND" \
-    --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" ${STUDIO_BOARD_ONCE:+--once}
+  exec "$PYTHON" "$STUDIO_HOME/ui/board.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$(team_suffix)" \
+    --kinds "$(kinds_arg)" --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" ${STUDIO_BOARD_ONCE:+--once}
+}
+
+# studio status [project]: who is on the team, and which CLI each one runs.
+cmd_status() {
+  local dir=${1:-$LAST_PROJECT} n=1 k
+  [ -n "$dir" ] || die "Which project? studio status /path/to/project"
+  set_project "$dir"; load_team
+  printf '%s team (%s), router %s\n' "$PROJECT_SLUG" "$(team_suffix)" "$ROUTER"
+  printf '  %-12s %-7s %s\n' architect "$KIND_ARCH" "$ARCH_M"
+  printf '  %-12s %-7s %s\n' main "$KIND_MAIN" "$MAIN_M"
+  while [ $n -le "$WORKERS" ]; do
+    k=$(worker_kind "$n")
+    printf '  %-12s %-7s %s\n' "worker-$n" "$k" "$(model_for "$k" worker)"
+    n=$((n + 1))
+  done
 }
 
 # The board as a web page, kept up by launchd (KeepAlive) on this Mac.
@@ -504,9 +665,9 @@ cmd_web() {
   local dir=${LAST_PROJECT:-$STUDIO_WORKSPACE} plist="$HOME/Library/LaunchAgents/$WEB_LABEL.plist"
   case ${1:-start} in
     serve)
-      set_project "$dir"; pick_models; load_team
-      exec "$PYTHON" "$STUDIO_HOME/ui/web.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$AGENT_KIND" \
-        --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" --port "$WEB_PORT" \
+      set_project "$dir"; load_team
+      exec "$PYTHON" "$STUDIO_HOME/ui/web.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$(team_suffix)" \
+        --kinds "$(kinds_arg)" --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" --port "$WEB_PORT" \
         --name "$STUDIO_NAME" ${PEER_URL:+--peer "$PEER_URL" --peer-name "$PEER_NAME"} ;;
     stop)
       launchctl bootout "gui/$(id -u)/$WEB_LABEL" >/dev/null 2>&1; ok "Web view stopped." ;;
@@ -589,7 +750,7 @@ cmd_doctor() {
   check() { # label command hint
     if command -v "$2" >/dev/null 2>&1; then ok "$1"; else warn "$1 missing. $3"; bad=1; fi
   }
-  printf '%s\n' "${C_PINK}${C_BOLD}Dev Studio checkup${C_RESET}  (agents: $AGENT_KIND, router: $ROUTER)"
+  printf '%s\n' "${C_PINK}${C_BOLD}Dev Studio checkup${C_RESET}  (agents: $(team_suffix), router: $ROUTER)"
   check "Herdr"       "$HERDR" "brew install herdr"
   check "Claude Code" claude   "https://code.claude.com/docs/en/setup"
   check "Codex"       codex    "npm install -g @openai/codex (only needed for --codex)"
@@ -630,6 +791,7 @@ cmd_stop() {
 load_config
 case ${1:-help} in
   up)     shift; cmd_up "$@" ;;
+  status) shift; cmd_status "$@" ;;
   board|dash) shift; cmd_board "$@" ;;
   router) shift; cmd_router "$@" ;;
   web)    shift; cmd_web "$@" ;;
