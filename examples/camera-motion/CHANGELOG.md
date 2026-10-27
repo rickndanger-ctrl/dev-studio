@@ -3,6 +3,12 @@
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.3
+
+### Fixed
+
+- The unchanged-presets test compares values within 1e-9 instead of byte-exact hashes, so it passes on Linux.
+
 ## 0.1.2
 
 ### Fixed

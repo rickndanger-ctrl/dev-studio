@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "camera-motion"
-version = "0.1.2"
+version = "0.1.3"
 description = "Camera moves for AI video: presets, previews, and trajectory export (RE10K, JSON, Blender, glTF)."
 readme = "README.md"
 license = {text = "MIT"}

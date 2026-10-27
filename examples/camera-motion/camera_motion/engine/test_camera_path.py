@@ -1,4 +1,3 @@
-import hashlib
 import json
 import math
 import os
@@ -269,22 +268,28 @@ class CameraFrameTests(unittest.TestCase):
 
 
 CATALOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "presets", "catalog.json")
-# sha256 of json.dumps(path(preset)) for each non-dolly_zoom catalog preset, computed from the
-# engine before dolly_zoom changed. Those presets must stay byte-identical.
-GOLDEN = {
-    "dolly_in": "74f62ebabb43064ec4700302ecb5727fb36f232c664442defcaad63cacd0f135",
-    "dolly_out": "9fc8214e98af357d7bc67d19964f4f2ae4ffae2cbdba734ff06ed70d0fb0b939",
-    "dolly_left": "155764927495b7ceb964ee404d68f26ac48fe43e55f22e9fdf400ac28fb0a309",
-    "dolly_right": "43a763b57ddb1c46924c55b1cf22aa2473f156d796ba215bba85cda7228a56c7",
-    "crane_up": "5cb40fb313d5dee9b73fafdc0cbd78b739c706ccef4c29a1c2668ed81da9efd9",
-    "crane_down": "4ea12ac4df21a7ce546d696988ac649ea4dc9c16d02044d9bc80dbcceb62a905",
-    "orbit_left": "6fd5c7aa1f398b590da71e1d681df2997a2540a2f91ebfb7b834371dde34470f",
-    "orbit_right": "c2f32886881f80da4ce0bdef61a374d9eecd55bc91fa442bddac03199a1d8db9",
-    "pan_left": "c3c0cfe1d51e04de432300439b39fc5103ff7b7162065b4511ddf47276ea9bb7",
-    "pan_right": "4f6984a9b8a6ee4b434714329eb78677b38649accc2e528b69467a655bce2246",
-    "tilt_up": "bce50cdf3c664d9d92eb2e504a8e79f89e3711ec81e9487bfa683c266c9b0e14",
-    "tilt_down": "7edbd6a9553ec21126d3af042e88374729928d0f68aeda88a1799b9bb219399a",
-}
+GOLDEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden_paths.json")
+# Stored values for the 12 non-dolly_zoom presets: every frame's t, position, rotation and fov,
+# rounded to 9 decimals, generated from the engine at f57b06c. The test compares each number
+# within 1e-9, not a hash of the output. Why not byte-exact: libm sin and cos differ in the last
+# bit between platforms (macOS arm64 vs Linux glibc x86_64), so exact output differs there.
+GOLDEN_TOLERANCE = 1e-9
+
+
+def _golden_mismatches(frames, stored):
+    """Human-readable differences between engine frames and stored golden frames."""
+    if len(frames) != len(stored):
+        return [f"{len(frames)} frames, expected {len(stored)}"]
+    problems = []
+    for i, (got, want) in enumerate(zip(frames, stored)):
+        for key in ("t", "fov"):
+            if abs(got[key] - want[key]) > GOLDEN_TOLERANCE:
+                problems.append(f"frame {i} {key}: {got[key]!r} vs {want[key]!r}")
+        for key in ("position", "rotation"):
+            for axis, (a, b) in enumerate(zip(got[key], want[key])):
+                if abs(a - b) > GOLDEN_TOLERANCE:
+                    problems.append(f"frame {i} {key}[{axis}]: {a!r} vs {b!r}")
+    return problems
 
 
 def _catalog():
@@ -328,13 +333,15 @@ class DollyZoomTests(unittest.TestCase):
         for h in heights:
             self.assertAlmostEqual(h / heights[0], 1.0, delta=1e-9)
 
-    def test_non_dolly_zoom_presets_are_byte_identical(self):
+    def test_unchanged_presets_match_golden_values(self):
+        with open(GOLDEN_FILE, encoding="utf-8") as f:
+            golden = json.load(f)
         catalog = [p for p in _catalog() if p["type"] != "dolly_zoom"]
-        self.assertEqual({p["id"] for p in catalog}, set(GOLDEN))
+        self.assertEqual({p["id"] for p in catalog}, set(golden))
         for preset in catalog:
             with self.subTest(id=preset["id"]):
-                digest = hashlib.sha256(json.dumps(path(preset)).encode("utf-8")).hexdigest()
-                self.assertEqual(digest, GOLDEN[preset["id"]])
+                problems = _golden_mismatches(path(preset), golden[preset["id"]])
+                self.assertFalse(problems, problems[:5])
 
     def test_subject_distance_override(self):
         frames = path(_preset("dolly_zoom", distance=1.0, subject_distance=10.0),
