@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Dev Studio installer. Run once on each Mac:
-#   ./install.sh            a complete, lean team on this Mac (solo, the default)
-#   ./install.sh hq         two-Mac setup: the architect's office
-#   ./install.sh workshop   two-Mac setup: the builders' workshop
+#   ./install.sh                 asks a couple of questions
+#   STUDIO_YES=1 ./install.sh    takes the defaults (for installs over SSH)
 set -eu
 STUDIO_HOME=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib/common.sh
@@ -10,9 +9,11 @@ STUDIO_HOME=$(cd "$(dirname "$0")" && pwd)
 is_macos || die "The installer is for macOS."
 
 ask() { # question default -> answer
-  local a
-  printf '%s %s[%s]%s ' "${C_CYAN}?${C_RESET} $1" "$C_DIM" "$2" "$C_RESET" >&2
-  read -r a
+  local a=''
+  if [ "${STUDIO_YES:-0}" != 1 ] && [ -t 0 ]; then
+    printf '%s %s[%s]%s ' "${C_CYAN}?${C_RESET} $1" "$C_DIM" "$2" "$C_RESET" >&2
+    read -r a
+  fi
   printf '%s' "${a:-$2}"
 }
 
@@ -23,19 +24,18 @@ ${C_DIM}  your AI dev team, one click away${C_RESET}
 
 EOF
 
-# 1. Which machine is this?
-role=${1:-solo}
-case $role in solo|hq|workshop) ;; *) die "Role must be solo, hq or workshop." ;; esac
-
-# 2. Tools.
-command -v brew >/dev/null 2>&1 || die "Homebrew is needed first. Install it from https://brew.sh then run this again."
+# 1. Tools. Herdr and jq come from Homebrew; Claude Code / Codex you install yourself.
+command -v brew >/dev/null 2>&1 || warn "Homebrew isn't installed, so I can't install anything missing. https://brew.sh"
 for tool in herdr jq; do
   if command -v "$tool" >/dev/null 2>&1; then ok "$tool is installed"
-  else say "Installing $tool…"; brew install "$tool"; fi
+  elif command -v brew >/dev/null 2>&1; then say "Installing $tool…"; brew install "$tool"
+  else die "$tool is missing and there is no Homebrew to install it."; fi
 done
 command -v claude >/dev/null 2>&1 || warn "Claude Code isn't installed. Get it from https://code.claude.com/docs/en/setup"
+command -v codex  >/dev/null 2>&1 || say "Codex isn't installed (only needed for 'studio up --codex')."
+command -v python3 >/dev/null 2>&1 || die "python3 is missing (the router and board need it): xcode-select --install"
 
-# 3. Settings.
+# 2. Settings.
 load_config
 projects=$PROJECTS_DIR
 for d in "$HOME/Developer" "$HOME/Projects" "$HOME/code" "$HOME/dev" "$HOME/GitHub"; do
@@ -43,50 +43,30 @@ for d in "$HOME/Developer" "$HOME/Projects" "$HOME/code" "$HOME/dev" "$HOME/GitH
 done
 projects=$(ask "Where do your project folders live?" "$projects")
 case $projects in "~"*) projects="$HOME${projects#\~}" ;; esac
-set_config STUDIO_ROLE "$role"
+mkdir -p "$projects"
 set_config PROJECTS_DIR "$projects"
-if [ "$role" != hq ]; then
-  set_config BUILDERS "$(ask "How many builders? (fewer = less memory)" "$BUILDERS")"
-fi
+set_config WORKERS "$(ask "How many workers? (fewer = less memory)" "$WORKERS")"
+set_config ROUTER "$(ask "Message router: jev, clef or rules?" "$ROUTER")"
 ok "Settings saved to $STUDIO_CONF"
 
-# 4. The `studio` command.
+# 3. The `studio` command.
 bindir=/opt/homebrew/bin
 [ -w "$bindir" ] || { bindir=$HOME/.local/bin; mkdir -p "$bindir"; }
 ln -sf "$STUDIO_HOME/bin/studio" "$bindir/studio"
 ok "The 'studio' command is ready ($bindir/studio)"
 
-# 5. Optional router.
-if ! command -v "${ROUTER_CMD:-jev-claude}" >/dev/null 2>&1; then
-  say "Optional: jev-router lets each builder pick the cheapest model that can handle each turn."
-  say "Install later with: npm install -g jev-router  (needs a JEV_API_KEY in ~/.jev-router.env)"
+# 4. The router's key.
+if [ -z "${TYPESAFE_API_KEY:-}" ] && ! grep -qs 'TYPESAFE_API_KEY' "$HOME/.zshrc"; then
+  warn "No TYPESAFE_API_KEY in ~/.zshrc: the JEV router will fall back to plain rules until you add one."
 fi
 
-# 6. Connect the workshop to HQ so one Herdr window shows both machines.
-if [ "$role" = hq ]; then
-  host=$(ask "Workshop Mac's SSH name to connect now (blank to skip, e.g. mini-two.local)" "")
-  if [ -n "$host" ]; then
-    if herdr machine add "$host"; then
-      set_config WORKSHOP_MACHINE "$host"
-      ok "Connected to the workshop at $host"
-    else
-      warn "Couldn't connect. On the workshop Mac turn on System Settings › General › Sharing › Remote Login, then run: herdr machine add $host"
-    fi
-  fi
-fi
+# 5. Dock app.
+"$STUDIO_HOME/macos/make-app.sh" solo
 
-# 7. Dock app.
-"$STUDIO_HOME/macos/make-app.sh" "$role"
-
-case $role in
-  solo) app_name="Dev Studio" ;;
-  hq)   app_name="Studio HQ" ;;
-  *)    app_name="Studio Workshop" ;;
-esac
 echo
 "$STUDIO_HOME/bin/studio" doctor || true
 cat <<EOF
 
-${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}$app_name${C_RESET} in your Dock.
+${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}Dev Studio${C_RESET} in your Dock.
 The first time, macOS will ask to let it control your terminal. Click OK.
 EOF
