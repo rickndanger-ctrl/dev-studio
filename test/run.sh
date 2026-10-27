@@ -162,6 +162,17 @@ print("ok")
 PYT
 check "loopback and tailnet only"           test "$?" = 0
 
+echo "Web API"
+python3 "$ROOT/ui/web.py" --studio "$PROJECT/.studio" --herdr "$HERDR" --port 8797 --name test-studio > "$T/web.log" 2>&1 &
+WEB_PID=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 2 -o /dev/null http://127.0.0.1:8797/health && break; sleep 0.3; done
+check "state has agents, hops, feed"         sh -c "curl -s -m 5 http://127.0.0.1:8797/api/state | python3 -c 'import json,sys; d=json.load(sys.stdin); assert {\"agents\",\"hops\",\"feed\",\"router\",\"mail\"} <= set(d) and d[\"agents\"][0][\"short\"]==\"@architect\" and d[\"hops\"]'"
+check "agent detail returns a terminal tail" sh -c "curl -s -m 5 'http://127.0.0.1:8797/api/agent?name=omac-architect' | python3 -c 'import json,sys; d=json.load(sys.stdin); assert \"tail\" in d and d[\"role\"]==\"architect\"'"
+check "unknown agent is a 404"               test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8797/api/agent?name=nobody')" = 404
+check "foreign Host header refused"          test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H 'Host: evil.example.com' http://127.0.0.1:8797/)" = 403
+check "page and script served"               sh -c "curl -s -m 5 http://127.0.0.1:8797/ | grep -q 'Live feed' && curl -s -m 5 http://127.0.0.1:8797/app.js | grep -q 'api/state'"
+kill "$WEB_PID" 2>/dev/null; wait "$WEB_PID" 2>/dev/null || true
+
 echo "Board renders"
 rc=0
 out=$(STUDIO_BOARD_ONCE=1 "$ROOT/bin/studio" board "$PROJECT" 2>&1) || rc=$?
@@ -170,10 +181,11 @@ check "exits cleanly"                        test "$rc" = 0
 check "shows the router panel"               grep -q "message router" <<<"$out"
 check "shows jev's bars"                     grep -q "which peer" <<<"$out"
 check "shows the architect card"             grep -q "session architect" <<<"$out"
-check "shows the mailbox"                    grep -q "PEER MAILBOX" <<<"$out"
+check "shows the mailbox"                    grep -q "mailbox" <<<"$out"
+check "draws the chain to the workers"       grep -q "┬" <<<"$out"
 check "shows blocked main session"           grep -q "NEEDS YOU" <<<"$out"
 check "shows the live feed"                 grep -q "live feed" <<<"$out"
-check "shows the launch command"             grep -q "crossSessionInbound" <<<"$out"
+check "shows who is talking to whom"         grep -q "who is talking to whom" <<<"$out"
 check "nothing else printed (no warnings)"   sh -c "! grep -qi 'warning\|deprecat\|traceback' <<<'$out'"
 
 echo; echo "$pass passed, $fail failed"

@@ -77,6 +77,7 @@ load_config() {
   STUDIO_NAME=$(scutil --get ComputerName 2>/dev/null || hostname -s)   # shown in the web page header
   PEER_URL=''                 # the other Mac's board, e.g. http://100.64.0.2:8787 (header link)
   PEER_NAME='the other Mac'
+  BOARD_WINDOW=auto           # auto = open the board in a Chrome app window beside the team; none = don't
   TERMINAL_APP=auto           # auto picks an OMAC terminal tile when OMAC runs; or omac|ghostty|iterm|terminal
   SOUNDS=1
   # shellcheck source=/dev/null

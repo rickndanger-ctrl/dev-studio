@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dev Studio</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand">
+    <span id="pulse" class="live-dot" title="connection"></span>
+    <b id="name">Dev Studio</b>
+    <span id="sub" class="sub">connecting…</span>
+  </div>
+  <nav id="chips" class="chips"></nav>
+</header>
+
+<main id="main">
+  <section id="stage" aria-label="Team">
+    <svg id="wires" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="labels"></div>
+    <div class="layer" data-layer="architect"></div>
+    <div class="layer" data-layer="main"></div>
+    <div class="layer" data-layer="router"></div>
+    <div class="layer" data-layer="worker"></div>
+    <p id="empty" class="empty" hidden>No team is running on this Mac. Click Dev Studio in the Dock.</p>
+  </section>
+
+  <aside id="side" aria-label="Live feed">
+    <div class="side-head">
+      <b>Live feed</b>
+      <div class="filters" id="filters">
+        <button data-f="all" class="on">All</button>
+        <button data-f="route">Routes</button>
+        <button data-f="state">Status</button>
+        <button data-f="delivery">Delivery</button>
+      </div>
+    </div>
+    <ol id="feed"></ol>
+  </aside>
+
+  <aside id="drawer" hidden aria-label="Details">
+    <div class="drawer-head">
+      <b id="drawer-title">Details</b>
+      <button id="drawer-close" title="Close">×</button>
+    </div>
+    <div id="drawer-body"></div>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

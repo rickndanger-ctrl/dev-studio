@@ -347,6 +347,23 @@ open_window() {
   esac
 }
 
+# The board as its own window next to the team: Chrome's app mode (no tabs, no
+# address bar) when Chrome is installed, else the default browser. The web view
+# runs under launchd; make sure it is up first.
+open_board_window() {
+  [ "${BOARD_WINDOW:-auto}" = none ] && return 0
+  local url="http://localhost:$WEB_PORT/" chrome="/Applications/Google Chrome.app"
+  curl -s -m 2 -o /dev/null "$url" || { cmd_web start >/dev/null 2>&1; sleep 1; }
+  if [ -d "$chrome" ]; then
+    # Start Chrome through LaunchServices (so it outlives this launcher), then hand
+    # the app window to the running instance; the binary exits at once.
+    open -a "Google Chrome" >/dev/null 2>&1; sleep 1
+    "$chrome/Contents/MacOS/Google Chrome" "--app=$url" --window-size=1500,980 >/dev/null 2>&1 &
+  else
+    open "$url"
+  fi
+}
+
 # --- Commands -------------------------------------------------------------------------
 
 # Models for the chosen agent kind.
@@ -449,7 +466,10 @@ cmd_up() {
     play_sound Glass
   fi
   [ -n "$ws" ] && hd workspace focus "$ws" >/dev/null 2>&1
-  [ $attach = 1 ] && open_window
+  if [ $attach = 1 ]; then
+    [ "${STUDIO_GUI:-0}" = 1 ] && is_macos && open_board_window
+    open_window
+  fi
   return 0
 }
 
