@@ -255,6 +255,11 @@ prepare_studio_dir() {
   fi
 }
 
+# Is at least the architect of this project's team a live agent in Herdr?
+team_is_live() {
+  hd agent list 2>/dev/null | jq -e --arg n "$PROJECT_SLUG-architect" '[.result.agents[]? | select(.name == $n)] | length > 0' >/dev/null 2>&1
+}
+
 # Picking a project in the studio is the owner's trust decision for it. Record it
 # the way Claude Code does, or the workers' `--worktree` sessions refuse to start
 # ("Workspace trust not yet accepted") while the architect waits at the dialog.
@@ -385,6 +390,14 @@ cmd_up() {
   ensure_server
   local ws
   ws=$(find_workspace "$WS_LABEL")
+  # After a Herdr restart the workspace comes back with empty shells and no
+  # agents. A space whose team is not live gets rebuilt, not reopened.
+  if [ -n "$ws" ] && ! team_is_live; then
+    warn "The $PROJECT_SLUG space is there but its agents are gone; rebuilding the team."
+    hd workspace close "$ws" >/dev/null 2>&1 || true
+    sleep 1
+    ws=''
+  fi
   if [ -n "$ws" ]; then
     ok "The $PROJECT_SLUG team ($AGENT_KIND) is already at work. Opening it…"
   else

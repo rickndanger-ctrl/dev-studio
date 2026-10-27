@@ -73,6 +73,12 @@ echo "Second click reuses the running team"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
 check "no second workspace created"          test "$(creates)" = 1
 
+echo "Space restored by Herdr but the agents are gone"
+: > "$MOCK_LOG"
+MOCK_NO_AGENTS=1 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach 2>/dev/null
+check "dead space closed"                    has "workspace close w1"
+check "team rebuilt"                         has "claude --name omac-architect --model opus"
+
 echo "Herdr server not running yet"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"; touch "$MOCK_STATE.down"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach

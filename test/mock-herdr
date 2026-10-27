@@ -32,6 +32,8 @@ case "$1 ${2:-}" in
     echo "pane $ws:p$n" >> "$MOCK_STATE"
     jq -n --arg p "$ws:p$n" '{result: {pane: {pane_id: $p}}}' ;;
   "agent list")
+    # MOCK_NO_AGENTS=1 plays a restored session: workspaces exist, no agents.
+    [ "${MOCK_NO_AGENTS:-0}" = 1 ] && { echo '{"result":{"type":"agent_list","agents":[]}}'; exit 0; }
     echo '{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"agent":"claude","agent_status":"working","name":"omac-architect","pane_id":"w1:p2","workspace_id":"w1"},{"agent":"claude","agent_status":"blocked","name":"omac-main","pane_id":"w1:p4","workspace_id":"w1"},{"agent":"claude","agent_status":"idle","name":"omac-worker-1","pane_id":"w1:p5","workspace_id":"w1"},{"agent":"claude","agent_status":"done","pane_id":"w1:p6","workspace_id":"w1"}]}}' ;;
   "agent rename")
     jq -n --arg p "$3" --arg n "$4" '{result: {type: "agent_info", agent: {agent: "claude", agent_status: "idle", name: $n, pane_id: $p}}}' ;;
