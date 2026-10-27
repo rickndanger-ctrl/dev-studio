@@ -8,6 +8,10 @@ cleanup() { [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null; rm -rf -- "$
 trap cleanup EXIT
 
 export HOME=$T/home MOCK_STATE=$T/state MOCK_LOG=$T/log HERDR=$ROOT/test/mock-herdr
+# The agents are never launched here (the mock Herdr only logs the command), but
+# `studio up` checks they exist, and CI machines have neither.
+mkdir -p "$T/bin"; for a in claude codex; do printf '#!/bin/sh\n' > "$T/bin/$a"; chmod +x "$T/bin/$a"; done
+export PATH=$T/bin:$PATH
 export STUDIO_DATA=$HOME/.dev-studio STUDIO_CONF=$HOME/.dev-studio/studio.conf
 mkdir -p "$HOME/Developer/OMAC" "$STUDIO_DATA"
 git -C "$HOME/Developer/OMAC" init -q
