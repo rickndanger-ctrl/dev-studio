@@ -1,0 +1,5 @@
+__pycache__/
+camera_motion/preview/out/
+camera_motion/web/frames.json
+build/
+*.egg-info/

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera motion</title>
+<style>
+:root { --bg: #fafafa; --fg: #111; --muted: #666; --line: #d0d0d0; --panel: #fff; --accent: #1a5fb4; --error: #c5221f; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; }
+}
+:root[data-theme="dark"] { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 0 0 12px; }
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.error { color: var(--error); }
+[hidden] { display: none !important; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.tile { display: block; text-decoration: none; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.tile img { display: block; width: 100%; height: auto; }
+.tile span { display: block; margin-top: 6px; font-weight: 600; }
+
+.detail-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { .detail-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+#big { display: block; width: 100%; height: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+
+.controls label { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr) 4.5rem; align-items: center; gap: 8px; margin: 10px 0; }
+.controls select, .controls input[type="range"] { width: 100%; min-width: 0; }
+.controls output { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.downloads { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.button { display: inline-block; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera motion</h1>
+  <a href="/live.html">Live viewer</a>
+</header>
+
+<main>
+  <section id="gallery" aria-label="Presets">
+    <p id="status" class="muted">Loading presets…</p>
+    <div id="grid" class="grid"></div>
+  </section>
+
+  <section id="detail" aria-label="Preset detail" hidden>
+    <p><a href="#">← All presets</a></p>
+    <h2 id="title"></h2>
+    <div class="detail-grid">
+      <div>
+        <img id="big" alt="Animated camera path">
+        <p id="preview-status" class="muted"></p>
+      </div>
+      <div>
+        <form id="controls" class="controls" onsubmit="return false"></form>
+        <div id="downloads" class="downloads"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const DEBOUNCE_MS = 150;
+  const FORMATS = [
+    ["json", "JSON"],
+    ["re10k", "RE10K"],
+    ["py", "Blender .py"],
+    ["gltf", "glTF"],
+  ];
+  const NUMBER_CONTROLS = [
+    { key: "distance", label: "Distance", min: -3, max: 3, step: 0.1, fallback: 0 },
+    { key: "angle", label: "Angle", min: -180, max: 180, step: 1, fallback: 0 },
+    { key: "radius", label: "Radius", min: 1, max: 10, step: 0.1, fallback: 5 },
+    { key: "fov_end", label: "End fov", min: 10, max: 90, step: 1, fallback: 30 },
+    { key: "seconds", label: "Seconds", min: 1, max: 10, step: 0.5, fallback: 3 },
+  ];
+  const EASINGS = ["linear", "ease_in", "ease_out", "ease_in_out"];
+  const AXES = ["x", "z"];
+
+  const $ = (id) => document.getElementById(id);
+
+  const el = (tag, attrs = {}, kids = []) => {
+    const node = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs)) {
+      if (name === "text") node.textContent = value;
+      else node.setAttribute(name, value);
+    }
+    node.append(...kids);
+    return node;
+  };
+
+  let presets = [];
+  let byId = new Map();
+  let loaded = false;
+
+  let presetId = null;
+  let current = {};
+  let touched = new Set();
+  let timer = null;
+
+  function controlsFor(preset) {
+    const params = preset.params || {};
+    return NUMBER_CONTROLS.filter((c) => c.key === "seconds" || c.key in params);
+  }
+
+  function queryString() {
+    const q = new URLSearchParams();
+    for (const key of ["distance", "angle", "radius", "fov_end", "axis", "easing", "seconds"]) {
+      if (touched.has(key)) q.set(key, current[key]);
+    }
+    const s = q.toString();
+    return s ? "?" + s : "";
+  }
+
+  function update() {
+    timer = null;
+    if (presetId === null) return;
+    const id = encodeURIComponent(presetId);
+    const qs = queryString();
+    $("big").src = `/anim/${id}.svg${qs}`;
+    $("preview-status").textContent = "";
+    $("downloads").replaceChildren(
+      ...FORMATS.map(([fmt, label]) =>
+        el("a", { class: "button", href: `/download/${id}.${fmt}${qs}` }, [document.createTextNode(label)])
+      )
+    );
+  }
+
+  function scheduleUpdate() {
+    clearTimeout(timer);
+    timer = setTimeout(update, DEBOUNCE_MS);
+  }
+
+  function touch(key, value) {
+    current[key] = value;
+    touched.add(key);
+    scheduleUpdate();
+  }
+
+  function buildDetail(preset) {
+    presetId = preset.id;
+    current = {};
+    touched = new Set();
+    const params = preset.params || {};
+    $("title").textContent = preset.name || preset.id;
+    $("preview-status").textContent = "";
+    const form = $("controls");
+    form.replaceChildren();
+
+    for (const c of controlsFor(preset)) {
+      const start = c.key in params ? params[c.key] : c.fallback;
+      const range = el("input", { type: "range", min: c.min, max: c.max, step: c.step, name: c.key });
+      range.value = String(start);
+      current[c.key] = range.value;
+      const out = el("output", { text: range.value });
+      range.addEventListener("input", () => {
+        out.textContent = range.value;
+        touch(c.key, range.value);
+      });
+      form.append(el("label", {}, [el("span", { text: c.label }), range, out]));
+    }
+
+    if (preset.type === "dolly" || "axis" in params) {
+      const select = el("select", { name: "axis" }, AXES.map((a) => el("option", { value: a, text: a })));
+      select.value = params.axis || "z";
+      current.axis = select.value;
+      select.addEventListener("change", () => touch("axis", select.value));
+      form.append(el("label", {}, [el("span", { text: "Axis" }), select]));
+    }
+
+    const easing = el("select", { name: "easing" }, EASINGS.map((e) => el("option", { value: e, text: e })));
+    easing.value = preset.easing || "linear";
+    current.easing = easing.value;
+    easing.addEventListener("change", () => touch("easing", easing.value));
+    form.append(el("label", {}, [el("span", { text: "Easing" }), easing]));
+
+    update();
+  }
+
+  function showGallery() {
+    presetId = null;
+    clearTimeout(timer);
+    $("detail").hidden = true;
+    $("gallery").hidden = false;
+  }
+
+  function showDetail(id) {
+    $("gallery").hidden = true;
+    $("detail").hidden = false;
+    const preset = byId.get(id);
+    if (!preset) {
+      presetId = null;
+      $("title").textContent = "Unknown preset";
+      $("controls").replaceChildren();
+      $("downloads").replaceChildren();
+      $("big").removeAttribute("src");
+      $("preview-status").textContent = `No preset named "${id}". Go back and pick one.`;
+      return;
+    }
+    buildDetail(preset);
+  }
+
+  function route() {
+    if (!loaded) return;
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (!id) showGallery();
+    else showDetail(id);
+  }
+
+  function renderGallery() {
+    $("grid").replaceChildren(
+      ...presets.map((p) => {
+        const tile = el("a", { class: "tile", href: "#" + encodeURIComponent(p.id) }, [
+          el("img", { src: `/anim/${encodeURIComponent(p.id)}.svg`, alt: p.name || p.id, loading: "lazy" }),
+          el("span", { text: p.name || p.id }),
+        ]);
+        const help = p.help || {};
+        if (help.when || help.feel) tile.title = `When: ${help.when || ""} Feel: ${help.feel || ""}`;
+        return tile;
+      })
+    );
+  }
+
+  $("big").addEventListener("error", () => {
+    $("preview-status").className = "error";
+    $("preview-status").textContent = "Preview unavailable. Check the server and the settings.";
+  });
+  $("big").addEventListener("load", () => {
+    $("preview-status").className = "muted";
+  });
+
+  async function loadPresets() {
+    try {
+      const res = await fetch("/api/presets");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      presets = await res.json();
+      byId = new Map(presets.map((p) => [p.id, p]));
+      renderGallery();
+      $("status").hidden = true;
+      loaded = true;
+      route();
+    } catch (err) {
+      $("status").className = "error";
+      $("status").textContent = `Could not load presets (${err.message}).`;
+    }
+  }
+
+  window.addEventListener("hashchange", route);
+  loadPresets();
+})();
+</script>
+</body>
+</html>

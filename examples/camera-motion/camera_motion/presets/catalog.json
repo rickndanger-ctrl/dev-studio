@@ -1,0 +1,114 @@
+[
+  {
+    "id": "dolly_in",
+    "name": "Dolly In",
+    "type": "dolly",
+    "params": {"axis": "z", "distance": 1.0},
+    "easing": "ease_in_out",
+    "description": "Camera moves forward toward the subject."
+  },
+  {
+    "id": "dolly_out",
+    "name": "Dolly Out",
+    "type": "dolly",
+    "params": {"axis": "z", "distance": -1.0},
+    "easing": "ease_in_out",
+    "description": "Camera moves backward away from the subject."
+  },
+  {
+    "id": "dolly_left",
+    "name": "Dolly Left",
+    "type": "dolly",
+    "params": {"axis": "x", "distance": -1.0},
+    "easing": "ease_in_out",
+    "description": "Camera slides left, keeping its aim."
+  },
+  {
+    "id": "dolly_right",
+    "name": "Dolly Right",
+    "type": "dolly",
+    "params": {"axis": "x", "distance": 1.0},
+    "easing": "ease_in_out",
+    "description": "Camera slides right, keeping its aim."
+  },
+  {
+    "id": "dolly_zoom_in",
+    "name": "Dolly Zoom In",
+    "type": "dolly_zoom",
+    "params": {"distance": 1.0, "fov_end": 75},
+    "easing": "ease_in_out",
+    "description": "Camera moves in while the lens widens to a wider field of view."
+  },
+  {
+    "id": "dolly_zoom_out",
+    "name": "Dolly Zoom Out",
+    "type": "dolly_zoom",
+    "params": {"distance": -1.0, "fov_end": 35},
+    "easing": "ease_in_out",
+    "description": "Camera moves back while the lens narrows to a tighter field of view."
+  },
+  {
+    "id": "crane_up",
+    "name": "Crane Up",
+    "type": "crane",
+    "params": {"distance": 1.0},
+    "easing": "ease_in_out",
+    "description": "Camera rises vertically."
+  },
+  {
+    "id": "crane_down",
+    "name": "Crane Down",
+    "type": "crane",
+    "params": {"distance": -1.0},
+    "easing": "ease_in_out",
+    "description": "Camera lowers vertically."
+  },
+  {
+    "id": "orbit_left",
+    "name": "Orbit Left",
+    "type": "orbit",
+    "params": {"angle": -45, "radius": 5.0},
+    "easing": "ease_in_out",
+    "description": "Camera circles the subject to its left, clockwise seen from above."
+  },
+  {
+    "id": "orbit_right",
+    "name": "Orbit Right",
+    "type": "orbit",
+    "params": {"angle": 45, "radius": 5.0},
+    "easing": "ease_in_out",
+    "description": "Camera circles the subject to its right, counter-clockwise seen from above."
+  },
+  {
+    "id": "pan_left",
+    "name": "Pan Left",
+    "type": "pan",
+    "params": {"angle": 30},
+    "easing": "ease_in_out",
+    "description": "Camera turns its view left in place."
+  },
+  {
+    "id": "pan_right",
+    "name": "Pan Right",
+    "type": "pan",
+    "params": {"angle": -30},
+    "easing": "ease_in_out",
+    "description": "Camera turns its view right in place."
+  },
+  {
+    "id": "tilt_up",
+    "name": "Tilt Up",
+    "type": "tilt",
+    "params": {"angle": 20},
+    "easing": "ease_in_out",
+    "description": "Camera pitches its view upward in place."
+  },
+  {
+    "id": "tilt_down",
+    "name": "Tilt Down",
+    "type": "tilt",
+    "params": {"angle": -20},
+    "easing": "ease_in_out",
+    "description": "Camera pitches its view downward in place."
+  }
+]

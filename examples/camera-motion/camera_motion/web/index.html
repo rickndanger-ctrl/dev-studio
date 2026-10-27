@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera motion viewer</title>
+<style>
+:root { --bg: #fafafa; --fg: #111; --muted: #666; --line: #ccc; --accent: #1a73e8; --panel: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #111; --fg: #eee; --muted: #999; --line: #333; --accent: #8ab4f8; --panel: #1b1b1b; }
+}
+:root[data-theme="dark"] { --bg: #111; --fg: #eee; --muted: #999; --line: #333; --accent: #8ab4f8; --panel: #1b1b1b; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+h1 { font-size: 1.2rem; margin: 0 0 12px; }
+.layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.presets { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.controls { display: flex; align-items: center; gap: 12px; }
+.controls input[type="range"] { flex: 1; min-width: 0; }
+.status { color: var(--muted); font-variant-numeric: tabular-nums; }
+.views { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+figure { margin: 0; }
+figcaption { color: var(--muted); font-size: 0.9rem; margin-bottom: 4px; }
+canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.error { color: #c5221f; }
+@media (min-width: 720px) { body { padding: 24px; } }
+</style>
+</head>
+<body>
+<h1>Camera motion viewer</h1>
+<div class="layout">
+  <div class="presets" id="presets" role="group" aria-label="Presets"></div>
+  <div class="controls">
+    <button id="play" type="button">Pause</button>
+    <input id="scrub" type="range" min="0" max="0" value="0" step="1" aria-label="Frame">
+    <span class="status" id="status">loading…</span>
+  </div>
+  <div class="views">
+    <figure>
+      <figcaption>Top view (x right, z down)</figcaption>
+      <canvas id="top" width="480" height="480"></canvas>
+    </figure>
+    <figure>
+      <figcaption>Camera view</figcaption>
+      <canvas id="cam" width="480" height="480"></canvas>
+    </figure>
+  </div>
+</div>
+<script>
+(() => {
+  "use strict";
+
+  const WORLD = 6;       // top view spans -WORLD..WORLD on x and z
+  const NEAR = 0.05;     // near clip depth for the camera view
+  const SIZE = 480;
+
+  const $ = (id) => document.getElementById(id);
+  const topCanvas = $("top"), camCanvas = $("cam");
+  const topCtx = topCanvas.getContext("2d"), camCtx = camCanvas.getContext("2d");
+  const playBtn = $("play"), scrub = $("scrub"), status = $("status"), presetBar = $("presets");
+
+  let data = null;
+  let presetId = null;
+  let index = 0;
+  let playing = true;
+  let acc = 0;      // seconds elapsed in the current loop
+  let last = null;
+
+  const rad = (deg) => deg * Math.PI / 180;
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+
+  // rotation is [yaw, pitch, roll] in degrees; yaw 0 looks down -z, +yaw turns left.
+  function basis(rotation) {
+    const yaw = rad(rotation[0]), pitch = rad(rotation[1]);
+    const right = [Math.cos(yaw), 0, -Math.sin(yaw)];
+    const forward = [-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)];
+    const up = cross(right, forward);
+    return { right, forward, up };
+  }
+
+  // World point -> camera space (x right, y up, z forward).
+  function toCamera(p, camPos, b) {
+    const d = [p[0] - camPos[0], p[1] - camPos[1], p[2] - camPos[2]];
+    return [dot(d, b.right), dot(d, b.up), dot(d, b.forward)];
+  }
+
+  function screenOf(c, focal) {
+    return [SIZE / 2 + (c[0] / c[2]) * focal, SIZE / 2 - (c[1] / c[2]) * focal];
+  }
+
+  // Draw a world segment in the camera view, clipped to the near plane.
+  function segment(ctx, pa, pb, camPos, b, focal) {
+    let a = toCamera(pa, camPos, b);
+    let c = toCamera(pb, camPos, b);
+    if (a[2] < NEAR && c[2] < NEAR) return;
+    if (a[2] < NEAR || c[2] < NEAR) {
+      const t = (NEAR - a[2]) / (c[2] - a[2]);
+      const cut = [a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t, NEAR];
+      if (a[2] < NEAR) a = cut; else c = cut;
+    }
+    const s = screenOf(a, focal), e = screenOf(c, focal);
+    ctx.beginPath();
+    ctx.moveTo(s[0], s[1]);
+    ctx.lineTo(e[0], e[1]);
+    ctx.stroke();
+  }
+
+  function topToScreen(x, z) {
+    const s = SIZE / (2 * WORLD);
+    return [SIZE / 2 + x * s, SIZE / 2 + z * s];
+  }
+
+  function drawTop(frames, frame) {
+    const ctx = topCtx;
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    const css = getComputedStyle(document.documentElement);
+    const line = css.getPropertyValue("--line").trim();
+    const muted = css.getPropertyValue("--muted").trim();
+    const accent = css.getPropertyValue("--accent").trim();
+    const fg = css.getPropertyValue("--fg").trim();
+
+    // unit grid
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    for (let u = -WORLD; u <= WORLD; u++) {
+      const a = topToScreen(u, -WORLD), b = topToScreen(u, WORLD);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      const c = topToScreen(-WORLD, u), d = topToScreen(WORLD, u);
+      ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
+    }
+
+    // faint full path
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    frames.forEach((f, i) => {
+      const p = topToScreen(f.position[0], f.position[2]);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    // subject cross at origin
+    const o = topToScreen(0, 0), arm = 0.3 * SIZE / (2 * WORLD);
+    ctx.strokeStyle = fg;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(o[0] - arm, o[1]); ctx.lineTo(o[0] + arm, o[1]);
+    ctx.moveTo(o[0], o[1] - arm); ctx.lineTo(o[0], o[1] + arm);
+    ctx.stroke();
+
+    // camera triangle, pointing along the xz part of forward
+    const b = basis(frame.rotation);
+    let dx = b.forward[0], dz = b.forward[2];
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len; dz /= len;
+    const px = -dz, pz = dx;              // perpendicular in xz
+    const tip = 0.6, back = 0.3, half = 0.25;
+    const cx = frame.position[0], cz = frame.position[2];
+    const pts = [
+      [cx + dx * tip, cz + dz * tip],
+      [cx - dx * back + px * half, cz - dz * back + pz * half],
+      [cx - dx * back - px * half, cz - dz * back - pz * half],
+    ].map(([x, z]) => topToScreen(x, z));
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    ctx.lineTo(pts[1][0], pts[1][1]);
+    ctx.lineTo(pts[2][0], pts[2][1]);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = muted;
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.fillText("x →", SIZE - 36, SIZE / 2 - 6);
+    ctx.fillText("z ↓", SIZE / 2 + 6, SIZE - 8);
+  }
+
+  function drawCamera(frame) {
+    const ctx = camCtx;
+    ctx.fillStyle = "#101418";
+    ctx.fillRect(0, 0, SIZE, SIZE);
+
+    const fovRad = rad(frame.fov);
+    const focal = (SIZE / 2) / Math.tan(fovRad / 2);
+    const b = basis(frame.rotation);
+    const camPos = frame.position;
+
+    ctx.strokeStyle = "#3a4a5c";
+    ctx.lineWidth = 1;
+    // ground grid at y = -0.5
+    for (let u = -5; u <= 5; u++) {
+      segment(ctx, [-5, -0.5, u], [5, -0.5, u], camPos, b, focal);
+      segment(ctx, [u, -0.5, -5], [u, -0.5, 5], camPos, b, focal);
+    }
+
+    // unit cube at origin
+    ctx.strokeStyle = "#9cc8ff";
+    ctx.lineWidth = 2;
+    const h = 0.5;
+    const corners = [];
+    for (const x of [-h, h]) for (const y of [-h, h]) for (const z of [-h, h]) corners.push([x, y, z]);
+    const edges = [];
+    for (let i = 0; i < 8; i++) for (let j = i + 1; j < 8; j++) {
+      const diff = corners[i].map((v, k) => Math.abs(v - corners[j][k]));
+      if (diff.filter((d) => d > 0).length === 1) edges.push([corners[i], corners[j]]);
+    }
+    for (const [p, q] of edges) segment(ctx, p, q, camPos, b, focal);
+  }
+
+  function setStatus(text, isError) {
+    status.textContent = text;
+    status.className = isError ? "status error" : "status";
+  }
+
+  function render() {
+    if (!data || presetId === null) return;
+    const preset = data[presetId];
+    const frames = preset.frames;
+    const frame = frames[index];
+    drawTop(frames, frame);
+    drawCamera(frame);
+    scrub.value = String(index);
+    setStatus(`${preset.name} · frame ${index + 1}/${frames.length} · t = ${(index / preset.fps).toFixed(2)} s`, false);
+  }
+
+  function selectPreset(id) {
+    presetId = id;
+    index = 0;
+    acc = 0;
+    const n = data[id].frames.length;
+    scrub.max = String(n - 1);
+    scrub.value = "0";
+    for (const btn of presetBar.querySelectorAll("button")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.id === id));
+    }
+    render();
+  }
+
+  function setPlaying(value) {
+    playing = value;
+    playBtn.textContent = playing ? "Pause" : "Play";
+  }
+
+  function tick(now) {
+    if (last === null) last = now;
+    const dt = (now - last) / 1000;
+    last = now;
+    if (data && presetId !== null && playing) {
+      const preset = data[presetId];
+      acc += dt;
+      const next = Math.floor(acc * preset.fps) % preset.frames.length;
+      if (next !== index) {
+        index = next;
+        render();
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  playBtn.addEventListener("click", () => setPlaying(!playing));
+
+  scrub.addEventListener("input", () => {
+    if (!data || presetId === null) return;
+    setPlaying(false);
+    index = Number(scrub.value);
+    acc = index / data[presetId].fps;
+    render();
+  });
+
+  fetch("frames.json")
+    .then((r) => {
+      if (!r.ok) throw new Error(`frames.json: HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((json) => {
+      data = json;
+      const ids = Object.keys(data);
+      if (ids.length === 0) throw new Error("frames.json has no presets");
+      for (const id of ids) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.id = id;
+        btn.textContent = data[id].name || id;
+        btn.addEventListener("click", () => selectPreset(id));
+        presetBar.appendChild(btn);
+      }
+      selectPreset(ids[0]);
+      requestAnimationFrame(tick);
+    })
+    .catch((err) => setStatus(`Could not load frames.json (${err.message}). Serve this folder with python3 web/serve.py.`, true));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+[
+  {
+    "id": "dolly_in",
+    "name": "Dolly in",
+    "type": "dolly",
+    "params": {
+      "distance": 1
+    },
+    "easing": "ease_in_out",
+    "description": "Move the camera 1 unit toward the subject along z."
+  },
+  {
+    "id": "crane_up",
+    "name": "Crane up",
+    "type": "crane",
+    "params": {
+      "distance": 1
+    },
+    "easing": "ease_in_out",
+    "description": "Raise the camera 1 unit along y."
+  },
+  {
+    "id": "orbit_left",
+    "name": "Orbit left",
+    "type": "orbit",
+    "params": {
+      "angle": -90,
+      "radius": 5
+    },
+    "easing": "ease_in_out",
+    "description": "Circle the subject at radius 5, travelling to the camera's left (angle -90)."
+  },
+  {
+    "id": "pan_right",
+    "name": "Pan right",
+    "type": "pan",
+    "params": {
+      "angle": -30
+    },
+    "easing": "linear",
+    "description": "Turn the camera 30 degrees to the right (yaw -30)."
+  },
+  {
+    "id": "tilt_up",
+    "name": "Tilt up",
+    "type": "tilt",
+    "params": {
+      "angle": 15
+    },
+    "easing": "ease_out",
+    "description": "Pitch the camera 15 degrees up."
+  },
+  {
+    "id": "dolly_zoom_in",
+    "name": "Dolly zoom in",
+    "type": "dolly_zoom",
+    "params": {
+      "distance": 1,
+      "fov_end": 30
+    },
+    "easing": "ease_in_out",
+    "description": "Dolly 1 unit toward the subject while narrowing the field of view from 50 to 30."
+  }
+]

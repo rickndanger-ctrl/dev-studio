@@ -1,0 +1,33 @@
+# GitHub Actions workflow for camera-motion (tests and install check).
+# Place this file at .github/workflows/camera-motion.yml in the repository root.
+# GitHub only runs workflows from .github/workflows/, so copy it there.
+# It runs in examples/camera-motion, so keep the project in that folder.
+
+name: camera-motion
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.12"]
+    defaults:
+      run:
+        working-directory: examples/camera-motion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -W error -m unittest
+      - name: Install
+        run: pip install .
+      - name: Doctor
+        run: camera-motion doctor

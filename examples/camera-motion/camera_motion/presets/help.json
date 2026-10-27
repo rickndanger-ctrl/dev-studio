@@ -1,0 +1,58 @@
+{
+  "dolly_in": {
+    "when": "Use it to move closer to a subject for a steady, direct approach.",
+    "feel": "The viewer feels drawn forward, a small step closer to the subject."
+  },
+  "dolly_out": {
+    "when": "Use it to pull back and show a subject within its surroundings.",
+    "feel": "The viewer feels a gentle step back, as if moving away from the subject."
+  },
+  "dolly_left": {
+    "when": "Use it to slide sideways past a subject while keeping it in view.",
+    "feel": "The viewer feels a short glide to the left, about one unit of travel."
+  },
+  "dolly_right": {
+    "when": "Use it to slide sideways past a subject while keeping it in view.",
+    "feel": "The viewer feels a short glide to the right, about one unit of travel."
+  },
+  "dolly_zoom_in": {
+    "when": "Use it to keep the subject roughly framed while the background stretches away.",
+    "feel": "The camera moves in as the lens widens, so the background seems to pull away."
+  },
+  "dolly_zoom_out": {
+    "when": "Use it to keep the subject roughly framed while the background moves closer.",
+    "feel": "The camera pulls back as the lens narrows, so the background looks flatter."
+  },
+  "crane_up": {
+    "when": "Use it to reveal more of a scene by rising above a subject.",
+    "feel": "The viewer feels lifted up slowly, about one unit higher."
+  },
+  "crane_down": {
+    "when": "Use it to lower the viewpoint for a lower angle on a subject.",
+    "feel": "The viewer feels lowered slowly, about one unit down."
+  },
+  "orbit_left": {
+    "when": "Use it to see a subject from a new side with a partial turn around it.",
+    "feel": "The viewer feels a slow arc to the left, about an eighth of a full circle."
+  },
+  "orbit_right": {
+    "when": "Use it to see a subject from a new side with a partial turn around it.",
+    "feel": "The viewer feels a slow arc to the right, about an eighth of a full circle."
+  },
+  "pan_left": {
+    "when": "Use it to turn toward something just outside the frame without moving.",
+    "feel": "The viewer's gaze turns left by 30 degrees while the camera stays put."
+  },
+  "pan_right": {
+    "when": "Use it to turn toward something just outside the frame without moving.",
+    "feel": "The viewer's gaze turns right by 30 degrees while the camera stays put."
+  },
+  "tilt_up": {
+    "when": "Use it to follow a subject upward or show height above the frame.",
+    "feel": "The viewer's gaze lifts up by 20 degrees while the camera stays put."
+  },
+  "tilt_down": {
+    "when": "Use it to follow a subject downward or show the ground in front.",
+    "feel": "The viewer's gaze drops down by 20 degrees while the camera stays put."
+  }
+}

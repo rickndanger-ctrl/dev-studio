@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camera-motion"
+version = "0.1.0"
+description = "Camera moves for AI video: presets, previews, and trajectory export (RE10K, JSON, Blender, glTF)."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["camera", "video", "trajectory", "re10k", "gltf", "blender", "svg"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+camera-motion = "camera_motion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["camera_motion", "camera_motion.*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.html"]
+"camera_motion.presets" = ["*.json"]

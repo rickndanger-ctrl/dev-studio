@@ -121,3 +121,7 @@ kept out of git.
 
 ## For the next engineer
 Read `HANDOFF.md`, `DESIGN.md` and `LESSONS.md`. Tests: `PATH="/bin:$PATH" /bin/bash test/run.sh`.
+
+## Example build: camera-motion
+
+`examples/camera-motion/` is the first project the studios built together (Mini 1: presets, sequences and docs; Mini 2: engine, previews, exports and web page). It's a stdlib-only Python package of cinematic camera moves — dolly, crane, orbit, pan, tilt, dolly zoom — with animated previews, exports to RealEstate10K, JSON, Blender and glTF, import and preset matching, and a local web page. Start with [its README](examples/camera-motion/README.md) and [tutorial](examples/camera-motion/docs/TUTORIAL.md).

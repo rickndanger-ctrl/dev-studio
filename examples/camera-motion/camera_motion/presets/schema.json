@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "camera-motion/presets/schema.json",
+  "title": "Camera motion preset",
+  "description": "One camera-motion preset in the shared format consumed by the engine.",
+  "$comment": "Sign conventions (matching the engine): dolly z positive = forward toward the subject; dolly x positive = right; crane positive = up; dolly_zoom distance positive = in; fov_end is the lens field of view at the end of the move (wider = larger); orbit angle positive = camera travels to its right (counter-clockwise seen from above), negative = left; pan angle positive = yaw left; tilt angle positive = pitch up. Every move must actually move: distance and angle may not be 0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "type", "params", "easing", "description"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "name": {"type": "string", "minLength": 1},
+    "type": {"enum": ["dolly", "dolly_zoom", "crane", "orbit", "pan", "tilt"]},
+    "params": {"type": "object"},
+    "easing": {"enum": ["linear", "ease_in_out", "ease_in", "ease_out"]},
+    "description": {"type": "string", "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "dolly"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["axis", "distance"],
+        "properties": {
+          "axis": {"enum": ["x", "z"]},
+          "frame": {"enum": ["world", "camera"]},
+          "distance": {"type": "number", "minimum": -50, "maximum": 50, "not": {"const": 0}}
+        }
+      }}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "dolly_zoom"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["distance", "fov_end"],
+        "properties": {
+          "distance": {"type": "number", "minimum": -50, "maximum": 50, "not": {"const": 0}},
+          "fov_end": {"type": "number", "minimum": 10, "maximum": 150},
+          "frame": {"enum": ["world", "camera"]}
+        }
+      }}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "crane"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["distance"],
+        "properties": {
+          "distance": {"type": "number", "minimum": -50, "maximum": 50, "not": {"const": 0}},
+          "frame": {"enum": ["world", "camera"]}
+        }
+      }}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "orbit"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["angle"],
+        "properties": {
+          "angle": {"type": "number", "minimum": -360, "maximum": 360, "not": {"const": 0}},
+          "radius": {"type": "number", "exclusiveMinimum": 0, "maximum": 50}
+        }
+      }}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "pan"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["angle"],
+        "properties": {
+          "angle": {"type": "number", "minimum": -180, "maximum": 180, "not": {"const": 0}}
+        }
+      }}}
+    },
+    {
+      "if": {"properties": {"type": {"const": "tilt"}}},
+      "then": {"properties": {"params": {
+        "type": "object", "additionalProperties": false, "required": ["angle"],
+        "properties": {
+          "angle": {"type": "number", "minimum": -90, "maximum": 90, "not": {"const": 0}}
+        }
+      }}}
+    }
+  ]
+}
