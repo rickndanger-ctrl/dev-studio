@@ -182,7 +182,16 @@ check "binds with getfqdn patched to raise" test "$rc" = 0
 echo "Web API"
 python3 "$ROOT/ui/web.py" --studio "$PROJECT/.studio" --herdr "$HERDR" --port 8797 --name test-studio > "$T/web.log" 2>&1 &
 WEB_PID=$!
-for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 2 -o /dev/null http://127.0.0.1:8797/health && break; sleep 0.3; done
+healthy=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -s -m 2 -o /dev/null http://127.0.0.1:8797/health; then healthy=1; break; fi
+  sleep 0.3
+done
+if [ "$healthy" = 0 ]; then
+  echo "  /health never answered; web.log follows:"
+  sed 's/^/    /' "$T/web.log" || true
+fi
+check "web answers /health"                  test "$healthy" = 1
 check "state has agents, hops, feed"         sh -c "curl -s -m 5 http://127.0.0.1:8797/api/state | python3 -c 'import json,sys; d=json.load(sys.stdin); assert {\"agents\",\"hops\",\"feed\",\"router\",\"mail\"} <= set(d) and d[\"agents\"][0][\"short\"]==\"@architect\" and d[\"hops\"]'"
 check "agent detail returns a terminal tail" sh -c "curl -s -m 5 'http://127.0.0.1:8797/api/agent?name=omac-architect' | python3 -c 'import json,sys; d=json.load(sys.stdin); assert \"tail\" in d and d[\"role\"]==\"architect\"'"
 check "unknown agent is a 404"               test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8797/api/agent?name=nobody')" = 404
