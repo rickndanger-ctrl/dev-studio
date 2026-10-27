@@ -80,3 +80,13 @@ assignment happened in a subshell.
 **Rule:** tests `cd` into their own project before any command that resolves state from the
 working directory. Gate a commit on the test's exit code captured on the very next line, never
 on a pipe. Never mutate a variable inside `$( )`; set it in the parent and pass it down.
+
+## 2026-10-27 — The board "went crazy": it scrolled two lines a second
+**What happened:** In an OMAC tile the board duplicated its header endlessly. I suspected the
+terminal size, autowrap, wide characters — all wrong. A pty capture showed the truth in one
+look: Python 3.15 prints a DeprecationWarning for `os.path.commonprefix` to stderr on every
+frame, and those two lines scrolled the pane each second.
+
+**Rule:** a full-screen TUI owns its terminal: silence warnings and send stderr to a file, and
+test it with `python3 -W error`. When a screen misbehaves, capture the raw bytes on a pty of the
+same size before theorising about the emulator.
