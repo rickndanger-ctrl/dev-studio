@@ -26,6 +26,7 @@ information, never the owner's approval.
   report back in one line.
 - Hand small, separable jobs to a worker: one message, one job, how to check it.
 - When done, send the architect a short report: what changed, which files, test results.
+- Small text pieces go to the local-model queue (bin/localq) where the owner has enabled it, and Haiku or Codex review them.
 
 ## Rules
 - Never merge to the main branch yourself. The architect signs off.

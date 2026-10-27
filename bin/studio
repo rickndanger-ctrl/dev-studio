@@ -112,7 +112,7 @@ split() { # pane direction new-pane-share cwd [env] -> new pane id
   hd pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" ${5:+--env "$5"} --no-focus | jq -r '.result.pane.pane_id'
 }
 
-# Each agent's pane gets its own secret (STUDIO_TOKEN) so `studio send` can sign
+# Each agent's pane gets its own secret (STUDIO_SEAL, passed as herdr --env) so `studio send` can sign
 # messages; only the router pane gets the whole map (STUDIO_TOKENS). Neither is
 # written to disk, so an agent cannot read another agent's token from a file.
 new_token() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
@@ -159,7 +159,7 @@ ensure_worktree() { # project-dir name
 
 # start_agent pane label role name model kind [worktree]
 start_agent() {
-  local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir
+  local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir sandbox=''
   brief=$(role_file "$role" "$name")
   if [ "$kind" = codex ]; then
     # Codex has no system-prompt flag: the role brief is its first prompt. A codex worker
@@ -172,7 +172,9 @@ start_agent() {
         warn "Couldn't create the worktree for $name; it starts in the project folder instead."
       fi
     fi
-    cmd="cd $(printf %q "$dir") && codex -m $model $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
+    # CODEX_SANDBOX (lib/common.sh) picks codex's sandbox; blank keeps codex's own default.
+    [ -n "${CODEX_SANDBOX:-}" ] && sandbox="--sandbox $(printf %q "$CODEX_SANDBOX") "
+    cmd="cd $(printf %q "$dir") && codex -m $model $sandbox$(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
   else
     cmd="claude --name $name --model $model"
     [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
@@ -334,13 +336,13 @@ layout() {
   # The workspace's --env reaches its root pane only (probed on herdr 0.9.5: a later
   # tab and a split both saw it unset), so this token stays in the architect's pane.
   # shellcheck disable=SC2046
-  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
   ws=$1; team=$2
   hd tab rename "$ws:t1" team >/dev/null 2>&1 || true
   board=$(new_tab "$ws" board "$PROJECT_DIR")
   start_pane_cmd "$board" "board" "$(printf %q "$STUDIO_HOME/bin/studio") board $(printf %q "$PROJECT_DIR")"
   issue_token "$PROJECT_SLUG-main"
-  col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
   write_peers
   start_agent "$team" "architect · $ARCH_M · $KIND_ARCH" architect "$PROJECT_SLUG-architect" "$ARCH_M" "$KIND_ARCH"
   start_agent "$col" "main · $MAIN_M · $KIND_MAIN" main "$PROJECT_SLUG-main" "$MAIN_M" "$KIND_MAIN"
@@ -348,7 +350,7 @@ layout() {
   while [ $n -le "$WORKERS" ]; do
     left=$((WORKERS - n + 1))
     issue_token "$PROJECT_SLUG-worker-$n"
-    next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+    next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
     wk=$(worker_kind "$n"); wm=$(model_for "$wk" worker)
     start_agent "$next" "worker-$n · $wm · $wk" worker "$PROJECT_SLUG-worker-$n" "$wm" "$wk" "worker-$n"
     pane=$next

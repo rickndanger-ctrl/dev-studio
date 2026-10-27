@@ -2,6 +2,8 @@
 # End-to-end test of the studio against a mock Herdr and a fake TypeSafe endpoint.
 # Usage: test/run.sh
 set -eu
+# A studio pane exports its own token. A test must never send as the agent that runs it.
+unset STUDIO_TOKEN STUDIO_SEAL STUDIO_TOKENS
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d)
 cleanup() { [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null; rm -rf -- "$T"; }
@@ -55,7 +57,7 @@ check ".studio kept out of git"              grep -q '^\.studio/$' "$PROJECT/.gi
 # shellcheck disable=SC2016
 check "project marked trusted for claude"    jq -e --arg p "$PROJECT" '.projects[$p].hasTrustDialogAccepted == true and .projects["/elsewhere"].lastCost == 1' "$HOME/.claude.json"
 check "ratio converted (architect keeps 55%)" has "pane split w1:p1 --direction right --ratio 0.55"
-check "each agent pane gets its own token"   sh -c "test \$(grep -c -- '--env STUDIO_TOKEN=' '$MOCK_LOG') = 4"
+check "each agent pane gets its own seal"    sh -c "test \$(grep -c -- '--env STUDIO_SEAL=' '$MOCK_LOG') = 4"
 check "router pane gets the token map"       grep -q -- '--env STUDIO_TOKENS={"omac-architect"' "$MOCK_LOG"
 check "last project remembered"              grep -q "LAST_PROJECT=.*OMAC" "$STUDIO_CONF"
 check "workspace focused"                    has "workspace focus w1"
@@ -118,6 +120,8 @@ check "status lists the architect's kind"    grep -q 'architect *claude' <<<"$st
 board_out=$(STUDIO_BOARD_ONCE=1 "$ROOT/bin/studio" board "$PROJECT" 2>&1)
 check "board shows codex worker-1"           grep -q 'codex' <<<"$board_out"
 check "board shows claude worker-2"          grep -q 'claude' <<<"$board_out"
+check "board titles a mixed team MIXED"      grep -q 'MIXED CROSS-SESSION' <<<"$board_out"
+check "mixed board does not say CODEX"       sh -c "! grep -q 'CODEX CROSS-SESSION' <<<'$board_out'"
 
 echo "Legacy team.json (no kinds) falls back to its one kind"
 jq 'del(.kinds)' "$PROJECT/.studio/team.json" > "$T/legacy.json" && cp "$T/legacy.json" "$PROJECT/.studio/team.json"
@@ -270,6 +274,35 @@ check "shows blocked main session"           grep -q "NEEDS YOU" <<<"$out"
 check "shows the live feed"                 grep -q "live feed" <<<"$out"
 check "shows who is talking to whom"         grep -q "who is talking to whom" <<<"$out"
 check "nothing else printed (no warnings)"   sh -c "! grep -qi 'warning\|deprecat\|traceback' <<<'$out'"
+
+echo "Codex sandbox and the seal"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\nCODEX_SANDBOX=danger-full-access\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --workers-mixed
+check "codex worker gets --sandbox from config" has "worktrees/worker-1 && codex -m gpt-6.1-sol --sandbox danger-full-access"
+check "claude agents never get --sandbox"    sh -c "! grep 'claude --name' '$MOCK_LOG' | grep -q -- '--sandbox'"
+check "each agent's pane gets its seal as --env" test "$(grep -c -- '--env STUDIO_SEAL=' "$MOCK_LOG")" = 4
+ARCH_SEAL=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//' | jq -r '.["omac-architect"]')
+W1_SEAL=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//' | jq -r '.["omac-worker-1"]')
+TOKENS=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//')
+check "architect's seal is its own token"    has "--env STUDIO_SEAL=$ARCH_SEAL"
+check "codex worker's seal is its own token" has "--env STUDIO_SEAL=$W1_SEAL"
+check "no token is typed into a pane"        env TOKENS_JSON="$TOKENS" MOCK_LOG="$MOCK_LOG" python3 -c '
+import json, os
+toks = list(json.loads(os.environ["TOKENS_JSON"]).values())
+for line in open(os.environ["MOCK_LOG"]):
+    if any(t in line for t in toks) and "--env " not in line:
+        raise SystemExit(1)
+'
+(cd "$PROJECT" && STUDIO_SEAL=$W1_SEAL "$ROOT/bin/studio" send omac-worker-1 @omac-architect "signed with the seal only")
+STUDIO_TOKENS=$TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "a seal-signed message is verified"    grep -q '"text": "signed with the seal only".*"verified": true' "$PROJECT/.studio/router.log"
+chmod 555 "$PROJECT/.studio/mail/outbox"
+rc=0
+err=$( (cd "$PROJECT" && "$ROOT/bin/studio" send omac-worker-1 auto "cannot write") 2>&1 ) || rc=$?
+chmod 755 "$PROJECT/.studio/mail/outbox"
+check "send exits 1 when the outbox is read-only" test "$rc" = 1
+check "send names the codex sandbox"         grep -q "codex sandbox" <<<"$err"
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

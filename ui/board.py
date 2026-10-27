@@ -398,9 +398,12 @@ def render(a, frame, cols, rows_avail):
         feed_rows = feed_rows[:1] + feed_rows[1:][-(max(3, rows_avail - 6)):]
 
     out = []
-    title = "CLAUDE CODE CROSS-SESSION" if kind == "claude" else "CODEX CROSS-SESSION"
-    out.append("  " + c(BOLD, title) + c(GREY, "  ·  ") + c(PINK, "SONNET BUILDS" if kind == "claude" else "MAIN SESSION BUILDS")
-               + c(GREY, "  ·  ") + c(PURPLE, "OPUS AUDITS" if kind == "claude" else "ARCHITECT AUDITS") + c(GREY, "  ·  " + project)
+    # "mixed" is a team whose roles run different CLIs: it gets neither the claude nor the codex labels.
+    title = {"claude": "CLAUDE CODE CROSS-SESSION", "mixed": "MIXED CROSS-SESSION"}.get(kind, "CODEX CROSS-SESSION")
+    builds = {"claude": "SONNET BUILDS", "mixed": "MAIN SESSION BUILDS"}.get(kind, "MAIN SESSION BUILDS")
+    audits = {"claude": "OPUS AUDITS", "mixed": "ARCHITECT AUDITS"}.get(kind, "ARCHITECT AUDITS")
+    out.append("  " + c(BOLD, title) + c(GREY, "  ·  ") + c(PINK, builds)
+               + c(GREY, "  ·  ") + c(PURPLE, audits) + c(GREY, "  ·  " + project)
                + c(GREY, "  ·  agents ") + c(BOLD, "%d/%d" % (sum(1 for n in peers if live.get(n, "offline") != "offline"), len(peers))) + c(GREY, " · active ") + c(BOLD, str(active)))
     out.append("")
     if cols >= 150:

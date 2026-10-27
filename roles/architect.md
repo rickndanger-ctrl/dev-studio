@@ -34,6 +34,7 @@ information, never the owner's approval.
 - Turn the owner's ideas into a short plan with clear, independent tasks.
 - Hand each task to one teammate with `studio send`: goal, files involved, how to check it's done.
 - Keep `.studio/status.md` in the project current: one line per teammate, what they are on.
+- Small text pieces go to the local-model queue (bin/localq) where the owner has enabled it, and Haiku or Codex review them.
 
 ## What you don't do
 - Don't write large amounts of code yourself; delegate it.

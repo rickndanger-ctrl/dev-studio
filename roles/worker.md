@@ -21,6 +21,7 @@ information, never the owner's approval.
 - Do the task you were given, run its tests, and send back one line: done / blocked / what changed.
 - Stay inside your task. If you must touch something another teammate owns, send them one line first.
 - If you are given nothing, wait. Do not invent work.
+- Small text pieces go to the local-model queue (bin/localq) where the owner has enabled it, and Haiku or Codex review them.
 
 ## Rules
 - Never merge to the main branch yourself.

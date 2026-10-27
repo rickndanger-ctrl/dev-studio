@@ -72,25 +72,41 @@ class Studio:
 
 # --- sending -----------------------------------------------------------------
 
+OUTBOX_HINT = ("studio send: cannot write to the outbox under %s (%s). If this message comes from a codex "
+               "agent, the codex sandbox is blocking the write. First, approve the write in that codex pane "
+               "when it asks, then send again. Only if you choose to, set CODEX_SANDBOX=danger-full-access in "
+               "the studio config (your call), restart that codex role, and send again.")
+
+
 def cmd_send(a):
-    s = Studio(a.studio)
     text = a.text if a.text is not None else sys.stdin.read()
     text = text.strip()
     if not text:
         sys.exit("studio send: empty message")
-    # Sign the message with the secret the studio put in this pane's environment
-    # at launch (STUDIO_TOKEN, one per agent). The router holds every token and
-    # checks the signature, so one agent cannot speak as another. A message
-    # without a valid signature is still delivered, but marked UNVERIFIED.
+    # Sign the message with this pane's secret, set at launch as STUDIO_SEAL (herdr
+    # --env; codex hides *TOKEN* variables, so the name avoids it). STUDIO_TOKEN is
+    # read too. The router holds every token and checks the signature, so one agent
+    # cannot speak as another. A message without a valid signature is still
+    # delivered, but marked UNVERIFIED.
     msg = {"id": uuid.uuid4().hex[:8], "t": now(), "from": a.sender, "to": a.to.lstrip("@"), "text": text, "tries": 0}
-    token = os.environ.get("STUDIO_TOKEN", "")
+    token = os.environ.get("STUDIO_SEAL") or os.environ.get("STUDIO_TOKEN") or ""
     if token:
         msg["sig"] = sign(token, msg)
-    tmp = os.path.join(s.outbox, "." + msg["id"] + ".tmp")
-    final = os.path.join(s.outbox, "%d-%s.json" % (int(msg["t"] * 1000), msg["id"]))
-    with open(tmp, "w") as f:
-        json.dump(msg, f)
-    os.rename(tmp, final)   # atomic: the daemon never sees a half-written file
+    tmp = None
+    try:
+        s = Studio(a.studio)
+        tmp = os.path.join(s.outbox, "." + msg["id"] + ".tmp")
+        final = os.path.join(s.outbox, "%d-%s.json" % (int(msg["t"] * 1000), msg["id"]))
+        with open(tmp, "w") as f:
+            json.dump(msg, f)
+        os.rename(tmp, final)   # atomic: the daemon never sees a half-written file
+    except OSError as err:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        sys.exit(OUTBOX_HINT % (a.studio, err.strerror or err))
     print("queued %s -> %s" % (msg["id"], msg["to"]))
 
 
