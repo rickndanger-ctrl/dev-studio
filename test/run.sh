@@ -57,7 +57,9 @@ check "then builds the team"                  has "--label omac-claude"
 
 echo "Codex team"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
-STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
+# A stand-in codex, so the test does not depend on it being installed (CI has none).
+mkdir -p "$T/stub"; printf '#!/bin/sh\nexit 0\n' > "$T/stub/codex"; chmod +x "$T/stub/codex"
+PATH="$T/stub:$PATH" STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
 check "workspace labelled omac-codex"        has "--label omac-codex"
 check "architect runs codex"                 has "codex -m gpt-6.1-sol"
 check "codex gets its role as first prompt"  has "omac-architect.md"

@@ -16,9 +16,12 @@ jobs:
           /bin/bash --version | head -1
       - name: Parse every script with bash 3.2
         run: |
-          for f in bin/studio ui/dashboard.sh lib/common.sh install.sh macos/make-app.sh test/run.sh test/mock-herdr; do
+          # Every tracked file with a bash shebang, so renamed or new scripts are always covered.
+          for f in $(git ls-files | xargs grep -lE '^#!.*bash|^# shellcheck shell=bash' --); do
             /bin/bash -n "$f" && echo "ok $f"
           done
+      - name: Python files compile
+        run: python3 -m py_compile $(git ls-files '*.py')
       - name: End-to-end tests under bash 3.2
         run: PATH="/bin:$PATH" /bin/bash test/run.sh
       - name: AppleScript project picker compiles
@@ -28,4 +31,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck bin/studio ui/dashboard.sh lib/common.sh install.sh macos/make-app.sh test/run.sh test/mock-herdr
+      - run: shellcheck $(git ls-files | xargs grep -lE '^#!.*bash|^# shellcheck shell=bash' --)
