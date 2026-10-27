@@ -1,0 +1,31 @@
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  macos-bash-3-2:
+    # The real target: macOS ships bash 3.2 at /bin/bash, and the Dock app runs under it.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the system bash 3.2 first on PATH
+        run: |
+          echo "/bin" >> "$GITHUB_PATH"
+          /bin/bash --version | head -1
+      - name: Parse every script with bash 3.2
+        run: |
+          for f in bin/studio ui/dashboard.sh lib/common.sh install.sh macos/make-app.sh test/run.sh test/mock-herdr; do
+            /bin/bash -n "$f" && echo "ok $f"
+          done
+      - name: End-to-end tests under bash 3.2
+        run: PATH="/bin:$PATH" /bin/bash test/run.sh
+      - name: AppleScript project picker compiles
+        run: osacompile -o /tmp/pick.scpt macos/pick-project.applescript
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck bin/studio ui/dashboard.sh lib/common.sh install.sh macos/make-app.sh test/run.sh test/mock-herdr

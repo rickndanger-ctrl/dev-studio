@@ -78,10 +78,15 @@ fi
 # 7. Dock app.
 "$STUDIO_HOME/macos/make-app.sh" "$role"
 
+case $role in
+  solo) app_name="Dev Studio" ;;
+  hq)   app_name="Studio HQ" ;;
+  *)    app_name="Studio Workshop" ;;
+esac
 echo
 "$STUDIO_HOME/bin/studio" doctor || true
 cat <<EOF
 
-${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}$(case $role in solo) echo "Dev Studio" ;; hq) echo "Studio HQ" ;; *) echo "Studio Workshop" ;; esac)${C_RESET} in your Dock.
+${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}$app_name${C_RESET} in your Dock.
 The first time, macOS will ask to let it control your terminal. Click OK.
 EOF

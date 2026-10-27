@@ -196,18 +196,7 @@ pick_project() {
   default=${LAST_PROJECT:+$(basename "$LAST_PROJECT")}
   if [ "${STUDIO_GUI:-0}" = 1 ] && is_macos; then
     [ -n "$projects" ] || die "No git projects found in $PROJECTS_DIR"
-    choice=$(osascript - "$projects" "$default" <<'OSA' 2>/dev/null
-on run argv
-  set AppleScript's text item delimiters to linefeed
-  set items_ to text items of (item 1 of argv)
-  set def to item 2 of argv
-  if def is "" or items_ does not contain def then set def to item 1 of items_
-  set r to choose from list items_ with title "Dev Studio" with prompt "🎬 Which project is the team working on today?" default items {def} OK button name "Let's go"
-  if r is false then return ""
-  return item 1 of r
-end run
-OSA
-)
+    choice=$(osascript "$STUDIO_HOME/macos/pick-project.applescript" "$projects" "$default" 2>/dev/null)
     [ -n "$choice" ] || exit 0   # cancelled
   elif [ ! -t 0 ] || [ -z "$projects" ]; then
     choice=$default

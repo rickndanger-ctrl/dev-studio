@@ -96,6 +96,17 @@ extras() {
   printf '  🧠 memory  %s%s MB free%s   💻 load %s\n' "$color" "$mem" "$C_RESET" "$(uptime | sed 's/.*load averages*: //')"
 }
 
+# The whole screen, built in one go so it can be drawn without flicker.
+render() { # frame agent-list
+  local tip=${TIPS[$(( ($1 / 15) % ${#TIPS[@]} ))]}
+  banner
+  project_line
+  team_board "$1" "$2"
+  extras
+  printf '\n  %s💡 %s%s\n' "$C_DIM" "$tip" "$C_RESET"
+  printf '\n  %s%s · refreshing every %ss · Ctrl-C to close%s\n' "$C_DIM" "$(date '+%a %l:%M %p')" "$REFRESH" "$C_RESET"
+}
+
 trap 'tput cnorm 2>/dev/null; exit 0' INT TERM
 tput civis 2>/dev/null
 clear
@@ -103,15 +114,7 @@ frame=0
 while :; do
   list=$(agents)
   chime "$list"
-  out=$(
-    banner
-    project_line
-    team_board "$frame" "$list"
-    extras
-    tip=${TIPS[$(( (frame / 15) % ${#TIPS[@]} ))]}
-    printf '\n  %s💡 %s%s\n' "$C_DIM" "$tip" "$C_RESET"
-    printf '\n  %s%s · refreshing every %ss · Ctrl-C to close%s\n' "$C_DIM" "$(date '+%a %l:%M %p')" "$REFRESH" "$C_RESET"
-  )
+  out=$(render "$frame" "$list")
   tput cup 0 0 2>/dev/null || clear
   printf '%s' "$out"
   tput ed 2>/dev/null
