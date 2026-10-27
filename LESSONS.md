@@ -42,3 +42,17 @@ forever. The mock copied the docs, so 28 tests passed.
 **Rule:** Before trusting a CLI's JSON shape, run the real command once and paste its
 actual reply into the mock, with the date. Verify ratio-style arguments with a throwaway
 workspace and `pane layout` instead of assuming which side they apply to.
+
+## 2026-10-27 — The window opened on the wrong Mac, and the board measured the wrong terminal
+**What happened:** Three real-run surprises. (1) `osascript … do script` put the studio in a
+tab of the owner's minimized OMAC window, and "resize front window" shrank *his* window, not
+ours. (2) The Herdr TUI remembers the saved SSH machine it showed last
+(`~/.local/state/herdr/client`), so every new client opened on Mini 2's workspace, even in the
+studio's own `--session`. (3) The dashboard read its size with `$(tput cols)`, whose stdout is
+a pipe, so it always got 80x24 and wrapped inside a 44x5 pane.
+
+**Rule:** Size the tab `do script` returns, never "front window". Give the studio's client its
+own `XDG_STATE_HOME` so no saved machine can steal the view; keep the server on the normal
+environment. Measure a terminal with `stty size </dev/tty`, every frame. And confirm a window
+with a screenshot of the window (the pane's text read looked fine while the user would have
+seen another Mac).

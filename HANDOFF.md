@@ -26,7 +26,11 @@ memory is limited.
 
 ## Where things stand
 - Repo: `rickndanger-ctrl/dev-studio`, branch `studio-v1`, draft PR #1.
-- Installed on Mini One at `~/dev-studio` via `./install.sh` (solo, 2 builders).
+- Installed on Mini One at `~/dev-studio` via `./install.sh` (solo; `BUILDERS=3` in studio.conf,
+  capped by free memory at launch).
+- Matches the "Opus architects · Haiku relays · Sonnet executes" blueprint: the Haiku relay is on
+  by default (`MESSENGER=0` to save ~600MB), role briefs follow the split, and the dashboard is a
+  board (role cards, session log from `.studio/status.md`, peers footer).
 - Found on this Mac: `~/.local/bin/herdr`, `~/.local/bin/claude`, `/opt/homebrew/bin/jq`.
   `jev-claude` is **not** installed.
 - **First Dock launch crashed:** `bin/studio: line 308: syntax error near unexpected token '('`.
@@ -56,7 +60,10 @@ Checked with a throwaway workspace (`studio-probe`), then closed:
    layouts still say "new pane's share".
 4. **Server start**: the server was already running (the TUI starts it); `ensure_server` is a fallback.
 5. **`pane run` right after a split**: works — the command ran and printed its output.
-6. **Terminal opener**: not yet confirmed (needs the Dock click).
+6. **Terminal opener**: `macos/open-terminal.applescript` opens a 220x58 window titled
+   "Dev Studio" and sizes the TAB it created. The studio runs in its own Herdr session
+   (`herdr --session dev-studio`, `STUDIO_SESSION` in `lib/common.sh`) and the client gets a
+   private `XDG_STATE_HOME`, otherwise it opens on the last saved SSH machine (Mini 2).
 
 ## Open questions for the owner
 - **Clef**: what command starts it? Its free tier runs locally. Set `ROUTER_CMD` in

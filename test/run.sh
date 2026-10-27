@@ -17,12 +17,13 @@ check() { # description, then a command that must succeed
   else fail=$((fail + 1)); echo "  FAIL $d"; fi
 }
 has() { grep -qF -- "$1" "$MOCK_LOG"; }
-creates() { grep -c '^workspace create' "$MOCK_LOG"; }
+creates() { grep -c 'workspace create' "$MOCK_LOG"; }
 
 echo "HQ layout"
 printf 'STUDIO_ROLE=hq\nSOUNDS=0\n' > "$STUDIO_CONF"
-"$ROOT/bin/studio" up OMAC --no-attach
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
 check "workspace labelled omac-hq"           has "--label omac-hq"
+check "studio uses its own herdr session"    has "--session dev-studio workspace create"
 check "architect runs opus"                  has "claude --name omac-architect --model opus"
 check "messenger runs haiku"                 has "claude --name omac-messenger --model haiku"
 check "dashboard pane started"               has "bin/studio dash"
@@ -34,6 +35,12 @@ check "workspace focused"                    has "workspace focus w1"
 check "architect named in herdr"             has "agent rename w1:p1 omac-architect"
 check "architect keeps 60% (herdr ratio = original's share)" has "pane split w1:p1 --direction right --ratio 0.60"
 
+echo "Herdr server not running yet"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"; touch "$MOCK_STATE.down"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "starts the studio's own herdr server"  has "--session dev-studio server"
+check "then builds the team"                  has "--label omac-hq"
+
 echo "Second click reuses the running team"
 "$ROOT/bin/studio" up OMAC --no-attach
 check "no second workspace created"          test "$(creates)" = 1
@@ -41,17 +48,17 @@ check "no second workspace created"          test "$(creates)" = 1
 echo "Workshop layout, 3 builders, no router installed"
 "$ROOT/bin/studio" role workshop
 echo "BUILDERS=3" >> "$STUDIO_CONF"
-"$ROOT/bin/studio" up OMAC --no-attach
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach   # real free memory would cap builders
 check "workspace labelled omac-workshop"     has "--label omac-workshop"
 check "builder-3 exists"                     has "claude --name omac-builder-3 --model sonnet --worktree builder-3"
 check "builders in separate worktrees"       has "--worktree builder-1"
 check "workshop messenger has unique name"   has "--name omac-shop-messenger"
-check "pane splits: 2 + (3-1) = 4"           test "$(grep -c '^pane split w2:' "$MOCK_LOG")" = 4
+check "pane splits: 2 + (3-1) = 4"           test "$(grep -c 'pane split w2:' "$MOCK_LOG")" = 4
 
 echo "Router installed: builders let it pick the model"
 mkdir -p "$T/bin"; printf '#!/bin/sh\n' > "$T/bin/jev-claude"; chmod +x "$T/bin/jev-claude"
 : > "$MOCK_STATE"
-PATH=$T/bin:$PATH "$ROOT/bin/studio" up OMAC --no-attach
+PATH=$T/bin:$PATH STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
 check "builder launched through jev-claude"  has "jev-claude --name omac-builder-1 --worktree builder-1"
 
 echo "Dashboard renders"

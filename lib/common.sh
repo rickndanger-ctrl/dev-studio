@@ -7,6 +7,29 @@ STUDIO_DATA=${STUDIO_DATA:-$HOME/.dev-studio}
 STUDIO_CONF=${STUDIO_CONF:-$STUDIO_DATA/studio.conf}
 HERDR=${HERDR:-herdr}
 
+# Every Herdr call goes through here. The studio lives in its own named Herdr
+# session (own server, own window), so a fresh client opens straight on the team
+# and never shows, or touches, whatever the default Herdr session is doing.
+hd() {
+  if [ -n "${STUDIO_SESSION:-}" ]; then "$HERDR" --session "$STUDIO_SESSION" "$@"
+  else "$HERDR" "$@"; fi
+}
+
+# The command a terminal window runs to attach to the studio's session.
+# The Herdr TUI remembers which saved SSH machine it showed last (in
+# ~/.local/state/herdr/client) and opens on that machine again, so a client
+# would come up showing some other Mac's workspace. Give the studio's client its
+# own state folder: with no saved machines there, it can only show the studio.
+# Only the client gets this; the server (and so every pane's shell) keeps the
+# normal environment.
+herdr_attach_cmd() {
+  local p
+  p=$(command -v "$HERDR")
+  if [ -n "${STUDIO_SESSION:-}" ]; then
+    printf 'env XDG_STATE_HOME=%s %s --session %s' "$STUDIO_DATA/herdr-state" "$p" "$STUDIO_SESSION"
+  else printf '%s' "$p"; fi
+}
+
 # Colors (disabled when not writing to a terminal).
 if [ -t 1 ]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -27,6 +50,7 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 # Defaults, then the user's config on top.
 load_config() {
   STUDIO_ROLE=solo            # solo | hq | workshop
+  STUDIO_SESSION=dev-studio   # named Herdr session for the team; blank = the default one
   PROJECTS_DIR=$HOME/Developer
   LAST_PROJECT=''
   BUILDERS=2                  # builder panes (solo and workshop)

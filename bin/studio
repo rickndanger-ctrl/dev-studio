@@ -25,20 +25,21 @@ ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
   studio dash             live team dashboard
   studio doctor           check that everything is installed
   studio role solo|hq|workshop  switch this machine's role
-  studio stop             stop Herdr and every agent in it
+  studio stop             stop the studio's Herdr session and every agent in it
 EOF
 }
 
 # --- Herdr helpers -----------------------------------------------------------
 
 ensure_server() {
-  "$HERDR" workspace list >/dev/null 2>&1 && return 0
+  hd workspace list >/dev/null 2>&1 && return 0
   say "Waking up Herdr…"
   mkdir -p "$STUDIO_DATA/logs"
-  nohup "$HERDR" server >>"$STUDIO_DATA/logs/herdr-server.log" 2>&1 &
+  # nohup needs a real binary, so spell the session flag out instead of using hd.
+  nohup "$HERDR" ${STUDIO_SESSION:+--session "$STUDIO_SESSION"} server >>"$STUDIO_DATA/logs/herdr-server.log" 2>&1 &
   local i=0
   while [ $i -lt 40 ]; do
-    "$HERDR" workspace list >/dev/null 2>&1 && return 0
+    hd workspace list >/dev/null 2>&1 && return 0
     sleep 0.25; i=$((i + 1))
   done
   die "Herdr didn't start. Log: $STUDIO_DATA/logs/herdr-server.log"
@@ -46,12 +47,12 @@ ensure_server() {
 
 # Print the id of the workspace with this label, if it exists.
 find_workspace() {
-  "$HERDR" workspace list 2>/dev/null | jq -r --arg l "$1" '
+  hd workspace list 2>/dev/null | jq -r --arg l "$1" '
     [.. | objects | select(.label? == $l or .name? == $l) | (.workspace_id // .id // empty)] | first // empty' 2>/dev/null
 }
 
 new_workspace() { # label cwd -> root pane id
-  "$HERDR" workspace create --cwd "$2" --label "$1" --no-focus | jq -r '.result.root_pane.pane_id'
+  hd workspace create --cwd "$2" --label "$1" --no-focus | jq -r '.result.root_pane.pane_id'
 }
 
 split() { # pane direction new-pane-share cwd -> new pane id
@@ -60,7 +61,7 @@ split() { # pane direction new-pane-share cwd -> new pane id
   # the layouts give the new pane.
   local keep
   keep=$(awk -v r="$3" 'BEGIN { printf "%.2f", 1 - r }')
-  "$HERDR" pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" --no-focus | jq -r '.result.pane.pane_id'
+  hd pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" --no-focus | jq -r '.result.pane.pane_id'
 }
 
 # --- Agents --------------------------------------------------------------------
@@ -90,8 +91,8 @@ start_agent() {
   [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
   cmd="$cmd --settings $(printf %q "$STUDIO_HOME/settings/peer.json")"
   cmd="$cmd --append-system-prompt-file $(printf %q "$(role_file "$role" "$name")")"
-  "$HERDR" pane rename "$pane" "$label" >/dev/null 2>&1 || true
-  "$HERDR" pane run "$pane" "$cmd" >/dev/null
+  hd pane rename "$pane" "$label" >/dev/null 2>&1 || true
+  hd pane run "$pane" "$cmd" >/dev/null
   name_agent "$pane" "$name"
 }
 
@@ -101,15 +102,15 @@ start_agent() {
 name_agent() { # pane name
   local i=0
   while [ $i -lt 60 ]; do
-    "$HERDR" agent rename "$1" "$2" >/dev/null 2>&1 && return 0
+    hd agent rename "$1" "$2" >/dev/null 2>&1 && return 0
     sleep 0.5; i=$((i + 1))
   done
   warn "Herdr hasn't spotted $2 yet, so its pane shows as $1 for now."
 }
 
 start_dash() {
-  "$HERDR" pane rename "$1" "✨ studio" >/dev/null 2>&1 || true
-  "$HERDR" pane run "$1" "$(printf %q "$STUDIO_HOME/bin/studio") dash" >/dev/null
+  hd pane rename "$1" "✨ studio" >/dev/null 2>&1 || true
+  hd pane run "$1" "$(printf %q "$STUDIO_HOME/bin/studio") dash" >/dev/null
 }
 
 # --- Layouts ---------------------------------------------------------------------
@@ -154,7 +155,7 @@ layout_solo() {
     n=$((n + 1))
   done
   if [ "$MESSENGER" = 1 ]; then
-    next=$(split "$dash" right 0.5 "$PROJECT_DIR")
+    next=$(split "$dash" right 0.35 "$PROJECT_DIR")   # the board needs the width more
     start_agent "$next" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-messenger" "$MESSENGER_MODEL"
   fi
   start_dash "$dash"
@@ -243,10 +244,11 @@ resolve_project() {
 # --- Opening the window ------------------------------------------------------------
 
 open_window() {
-  local herdr_path
-  herdr_path=$(command -v "$HERDR")
+  local attach
+  attach=$(herdr_attach_cmd)
   if [ "${STUDIO_GUI:-0}" != 1 ] || ! is_macos; then
-    exec "$HERDR"
+    # shellcheck disable=SC2086
+    exec $attach
   fi
   case ${TERMINAL_APP:-auto} in
     auto)
@@ -254,10 +256,11 @@ open_window() {
       elif [ -d /Applications/iTerm.app ]; then TERMINAL_APP=iterm
       else TERMINAL_APP=terminal; fi ;;
   esac
+  # shellcheck disable=SC2086
   case $TERMINAL_APP in
-    ghostty) open -na Ghostty.app --args -e "$herdr_path" ;;
-    iterm)   osascript -e "tell application \"iTerm\" to create window with default profile command \"$herdr_path\"" -e 'tell application "iTerm" to activate' ;;
-    *)       osascript -e "tell application \"Terminal\" to do script \"exec '$herdr_path'\"" -e 'tell application "Terminal" to activate' ;;
+    ghostty) open -na Ghostty.app --args --title="Dev Studio" -e $attach ;;
+    iterm)   osascript -e "tell application \"iTerm\" to create window with default profile command \"$attach\"" -e 'tell application "iTerm" to activate' ;;
+    *)       osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null ;;
   esac
 }
 
@@ -299,7 +302,7 @@ cmd_up() {
     ok "Team assembled."
     play_sound Glass
   fi
-  [ -n "$ws" ] && "$HERDR" workspace focus "$ws" >/dev/null 2>&1
+  [ -n "$ws" ] && hd workspace focus "$ws" >/dev/null 2>&1
   [ $attach = 1 ] && open_window
   return 0
 }
@@ -348,9 +351,9 @@ cmd_doctor() {
 }
 
 cmd_stop() {
-  printf 'Stop Herdr and every agent in it? [y/N] '
+  printf 'Stop the studio and every agent in it? [y/N] '
   read -r a
-  case $a in y|Y|yes) "$HERDR" server stop && ok "Studio stopped." ;; *) say "Left running." ;; esac
+  case $a in y|Y|yes) hd server stop >/dev/null && ok "Studio stopped." ;; *) say "Left running." ;; esac
 }
 
 load_config

@@ -4,6 +4,13 @@
 set -u
 : "${MOCK_STATE:?}" "${MOCK_LOG:?}"
 printf '%s\n' "$*" >> "$MOCK_LOG"
+[ "${1:-}" = --session ] && shift 2
+# "Server down" mode: touch $MOCK_STATE.down and every command fails until
+# `herdr server` is started, which stays up like the real one.
+if [ -f "$MOCK_STATE.down" ]; then
+  if [ "${1:-}" = server ]; then rm -f "$MOCK_STATE.down"; sleep 3; exit 0; fi
+  echo '{"error":{"code":"server_not_running"}}' >&2; exit 1
+fi
 touch "$MOCK_STATE"
 count() { grep -c "^$1 " "$MOCK_STATE" 2>/dev/null || true; }
 

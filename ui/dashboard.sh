@@ -29,13 +29,27 @@ else
 fi
 
 PREV_BLOCKED=''; PREV_DONE=''
-RULE="────────────────────────────────────────────────────────────────"
+# Fit the pane: Herdr gives the board a strip of the screen, not the whole thing.
+# Ask the tty directly (`tput cols` inside $( ) sees a pipe and answers 80x24).
+measure() {
+  local size
+  size=$(stty size </dev/tty 2>/dev/null)
+  LINES=${size%% *}; COLS=${size##* }
+  [ "$COLS" -gt 20 ] 2>/dev/null || COLS=80; [ "$LINES" -gt 5 ] 2>/dev/null || LINES=24
+  COMPACT=0; [ "$LINES" -lt 22 ] && COMPACT=1
+  RULE=$(printf '%*s' $((COLS - 4)) '' | tr ' ' '─')
+}
+measure
 
 banner() {
-  printf '%s\n' "${ACCENT}${C_BOLD}  ✦ DEV STUDIO · CROSS-SESSION${C_RESET}${C_DIM}  ·  $TITLE  ·  ${C_RESET}${C_PURPLE}OPUS ARCHITECTS · HAIKU RELAYS · SONNET EXECUTES${C_RESET}"
-  printf '  %s■%s %s · session architect   %s■%s %s · message relay   %s■%s %s · executes fixes\n' \
-    "$C_PINK" "$C_RESET" "$ARCHITECT_MODEL" "$C_GOLD" "$C_RESET" "$MESSENGER_MODEL" "$C_CYAN" "$C_RESET" "$BUILDER_MODEL"
-  printf '%s\n' "${C_DIM}  $RULE${C_RESET}"
+  if [ "$COLS" -lt 100 ]; then
+    printf '%s\n' "${ACCENT}${C_BOLD}  ✦ DEV STUDIO · $TITLE${C_RESET}  ${C_PURPLE}OPUS ARCHITECTS · HAIKU RELAYS · SONNET EXECUTES${C_RESET}"
+  else
+    printf '%s\n' "${ACCENT}${C_BOLD}  ✦ DEV STUDIO · CROSS-SESSION${C_RESET}${C_DIM}  ·  $TITLE  ·  ${C_RESET}${C_PURPLE}OPUS ARCHITECTS · HAIKU RELAYS · SONNET EXECUTES${C_RESET}"
+    printf '  %s■%s %s · session architect   %s■%s %s · message relay   %s■%s %s · executes fixes\n' \
+      "$C_PINK" "$C_RESET" "$ARCHITECT_MODEL" "$C_GOLD" "$C_RESET" "$MESSENGER_MODEL" "$C_CYAN" "$C_RESET" "$BUILDER_MODEL"
+  fi
+  [ "$COMPACT" = 1 ] || printf '%s\n' "${C_DIM}  $RULE${C_RESET}"
 }
 
 project_line() {
@@ -49,7 +63,7 @@ project_line() {
 # {"name":"omac-architect","pane_id":"w1:p1","agent_status":"working",...};
 # `name` is only there once `studio` has named the agent.
 agents() {
-  "$HERDR" agent list 2>/dev/null | jq -r '
+  hd agent list 2>/dev/null | jq -r '
     [.. | objects | select(has("pane_id") and ((.agent_status? // .status?) | type) == "string")]
     | .[] | "\(.name // .label // .pane_id)\t\(.agent_status // .status)"' 2>/dev/null
 }
@@ -70,7 +84,8 @@ card() { # frame list color title pattern
   local frame=$1 list=$2 color=$3 title=$4 pat=$5 rows name status
   rows=$(printf '%s\n' "$list" | awk -F'\t' -v p="$pat" '$1 ~ p')
   [ -n "$rows" ] || return 0
-  printf '\n  %s%s┌ %s %s%s\n' "$color" "$C_BOLD" "$title" "$C_RESET" "${C_DIM}${RULE:0:$((60 - ${#title}))}${C_RESET}"
+  [ "$COMPACT" = 1 ] || printf '\n'   # short pane: every row counts
+  printf '  %s%s┌ %s %s%s\n' "$color" "$C_BOLD" "$title" "$C_RESET" "${C_DIM}${RULE:0:$((COLS - 8 - ${#title}))}${C_RESET}"
   while IFS="$(printf '\t')" read -r name status; do
     printf '  %s│%s  %-26s %s\n' "$color" "$C_RESET" "$name" "$(status_cell "$frame" "$status")"
   done <<EOF
@@ -97,7 +112,9 @@ session_log() {
   local f=${LAST_PROJECT:-$PWD}/.studio/status.md
   printf '\n  %s%sSESSION LOG%s %s%s%s\n' "$C_BOLD" "$C_PURPLE" "$C_RESET" "$C_DIM" "${RULE:0:48}" "$C_RESET"
   if [ -s "$f" ]; then
-    grep -v '^\s*$' "$f" | tail -5 | sed "s/^/  ${C_DIM}·${C_RESET} /"
+    # An agent writes this file: drop control characters so it can't paint the terminal.
+    grep -v '^[[:space:]]*$' "$f" | tail -5 | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+      | cut -c1-$((COLS - 6)) | sed "s/^/  ${C_DIM}·${C_RESET} /"
   else
     printf '  %s· the relay writes .studio/status.md as the team works%s\n' "$C_DIM" "$C_RESET"
   fi
@@ -122,7 +139,7 @@ footer() { # agent-list
   else router="${C_DIM}jev off${C_RESET}"; fi
   mem=$(mem_available_mb)
   [ "${mem:-0}" -lt "${MEM_RESERVE_MB:-1536}" ] && color=$C_RED
-  printf '\n%s\n' "${C_DIM}  $RULE${C_RESET}"
+  [ "$COMPACT" = 1 ] || printf '\n%s\n' "${C_DIM}  $RULE${C_RESET}"
   printf '  peers %s%s/%s active%s  ·  inbound %saccept%s  ·  %s  ·  🧠 %s%s MB free%s  ·  load %s\n' \
     "$C_BOLD" "$active" "$total" "$C_RESET" "$C_GREEN" "$C_RESET" "$router" "$color" "$mem" "$C_RESET" \
     "$(uptime | sed 's/.*load averages*: //' | cut -d' ' -f1)"
@@ -136,6 +153,10 @@ render() { # frame agent-list
   banner
   project_line
   team_board "$1" "$2"
+  if [ "$COMPACT" = 1 ]; then   # short pane: cards and the peers line only
+    footer "$2"
+    return
+  fi
   session_log
   footer "$2"
   printf '  %s💡 %s%s\n' "$C_DIM" "$tip" "$C_RESET"
@@ -147,11 +168,14 @@ tput civis 2>/dev/null
 clear
 frame=0
 while :; do
+  measure
   list=$(agents)
   chime "$list"
   out=$(render "$frame" "$list")
   tput cup 0 0 2>/dev/null || clear 2>/dev/null
-  printf '%s' "$out"
+  # Clear to the end of every line as it is redrawn, so a shorter line never
+  # shows the tail of the one drawn there a frame ago.
+  printf '%s\n' "$out" | awk '{ printf "%s\033[K\n", $0 }'
   tput ed 2>/dev/null
   [ "${STUDIO_DASH_ONCE:-0}" = 1 ] && break
   sleep "$REFRESH"
