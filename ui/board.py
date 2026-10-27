@@ -307,6 +307,17 @@ def render(a, frame, cols, rows_avail):
     return out[:rows_avail] if rows_avail else out
 
 
+def terminal_size():
+    """Ask the tty itself. shutil.get_terminal_size trusts stale COLUMNS/LINES
+    variables first, and a wrong height makes every frame scroll the pane."""
+    for fd in (sys.stdout.fileno(), sys.stdin.fileno()):
+        try:
+            return os.get_terminal_size(fd)
+        except OSError:
+            continue
+    return os.terminal_size((120, 40))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--studio", required=True)
@@ -320,12 +331,12 @@ def main():
     a = p.parse_args()
     frame = 0
     if not a.once:
-        sys.stdout.write(ESC + "?25l" + ESC + "2J")
+        sys.stdout.write(ESC + "?25l" + ESC + "?7l" + ESC + "2J")   # hide cursor, no autowrap, clear
     last, last_size = [], None
     try:
         while True:
-            size = shutil.get_terminal_size((120, 40))
-            rows = render(a, frame, size.columns, 0 if a.once else size.lines)
+            size = terminal_size()
+            rows = render(a, frame, size.columns, 0 if a.once else max(1, size.lines - 1))
             if a.once:
                 sys.stdout.write("\n".join(rows) + "\n")
                 break
@@ -351,7 +362,7 @@ def main():
         pass
     finally:
         if not a.once:
-            sys.stdout.write(ESC + "?25h\n")
+            sys.stdout.write(ESC + "?7h" + ESC + "?25h\n")
 
 
 if __name__ == "__main__":
