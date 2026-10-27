@@ -266,9 +266,17 @@ def verify_sender(msg, tokens, studio=None):
     return True, ""
 
 
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def valid_message(msg):
+    """Only well-formed messages reach the judge: the id and names become file
+    names and agent targets, so they are letters, digits, - and _ only."""
     return (isinstance(msg, dict) and all(isinstance(msg.get(k), str) and msg.get(k) for k in ("id", "from", "to", "text"))
-            and msg["from"].replace("-", "").replace("_", "").isalnum())
+            and ID_RE.fullmatch(msg["id"]) is not None and NAME_RE.fullmatch(msg["from"]) is not None
+            and (msg["to"] == "auto" or NAME_RE.fullmatch(msg["to"]) is not None)
+            and isinstance(msg.get("t", 0), (int, float)))
 
 
 HEADER_RE = re.compile(r"\[\s*studio\s+relay", re.IGNORECASE)
@@ -325,7 +333,10 @@ def process(s, herdr, path, peers, tokens):
     # Archive under a name the router builds from the message itself, so the
     # replay record cannot be shaped by whoever wrote the outbox file.
     archive = "%d-%s.json" % (int(float(msg["t"]) * 1000), msg["id"])
-    os.rename(path, os.path.join(s.delivered if outcome == "delivered" or not decision["to"] else s.held, archive))
+    dest = os.path.join(s.delivered if outcome == "delivered" or not decision["to"] else s.held, os.path.basename(archive))
+    if os.path.exists(dest):
+        dest += "." + uuid.uuid4().hex[:6]   # never overwrite an archived message
+    os.rename(path, dest)
 
 
 def cmd_daemon(a):
