@@ -30,7 +30,7 @@ load_config() {
   PROJECTS_DIR=$HOME/Developer
   LAST_PROJECT=''
   BUILDERS=2                  # builder panes (solo and workshop)
-  MESSENGER=0                 # 1 = add a Haiku messenger pane in solo mode
+  MESSENGER=1                 # 1 = Haiku relay pane in solo mode (0 saves ~600MB)
   MB_PER_AGENT=600            # memory budget per Claude session, used to cap builders
   MEM_RESERVE_MB=1536         # memory left free for macOS and your other apps
   ROUTER_CMD=jev-claude       # used by builders when installed; blank to disable
