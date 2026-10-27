@@ -91,8 +91,8 @@ find_workspace() {
     [.. | objects | select(.label? == $l or .name? == $l) | (.workspace_id // .id // empty)] | first // empty' 2>/dev/null
 }
 
-new_workspace() { # label cwd -> "workspace-id root-pane-id"
-  hd workspace create --cwd "$2" --label "$1" --no-focus | jq -r '"\(.result.workspace.workspace_id) \(.result.root_pane.pane_id)"'
+new_workspace() { # label cwd [env] -> "workspace-id root-pane-id"
+  hd workspace create --cwd "$2" --label "$1" ${3:+--env "$3"} --no-focus | jq -r '"\(.result.workspace.workspace_id) \(.result.root_pane.pane_id)"'
 }
 
 new_tab() { # workspace label cwd [env] -> root pane id
@@ -204,7 +204,8 @@ fit_workers() {
   fi
 }
 
-# Tab 1 "board": the picture.   Tab 2 "team": the terminals.
+# Tab 1 "team": the terminals (what opens).   Tab 2 "board": the text board, for a tile
+# without a browser. The real board is the web page the Dock opens beside the team.
 #  ┌──────────────┬──────────────┐
 #  │              │ main         │
 #  │ architect    ├──────────────┤
@@ -213,14 +214,14 @@ fit_workers() {
 #  │ router       │ worker-2 …   │
 #  └──────────────┴──────────────┘
 layout() {
-  local ws root team col router pane next n=1 left TOKEN
-  # shellcheck disable=SC2046
-  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR")
-  ws=$1; root=$2
-  hd tab rename "$ws:t1" board >/dev/null 2>&1 || true
-  start_pane_cmd "$root" "board" "$(printf %q "$STUDIO_HOME/bin/studio") board $(printf %q "$PROJECT_DIR")"
+  local ws team col router pane next n=1 left TOKEN board
   issue_token "$PROJECT_SLUG-architect"
-  team=$(new_tab "$ws" team "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  # shellcheck disable=SC2046
+  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  ws=$1; team=$2
+  hd tab rename "$ws:t1" team >/dev/null 2>&1 || true
+  board=$(new_tab "$ws" board "$PROJECT_DIR")
+  start_pane_cmd "$board" "board" "$(printf %q "$STUDIO_HOME/bin/studio") board $(printf %q "$PROJECT_DIR")"
   issue_token "$PROJECT_SLUG-main"
   col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
   write_peers
@@ -238,6 +239,7 @@ layout() {
   # The router pane is split last so its environment can carry every token.
   router=$(split "$team" down 0.25 "$PROJECT_DIR" "STUDIO_TOKENS=$TOKENS_JSON")
   start_pane_cmd "$router" "router · $ROUTER" "$(printf %q "$STUDIO_HOME/bin/studio") router $(printf %q "$PROJECT_DIR")"
+  hd tab focus "$ws:t1" >/dev/null 2>&1 || true
   WS_ID=$ws
 }
 
@@ -320,6 +322,11 @@ trust_project() {
 open_window() {
   local attach
   attach=$(herdr_attach_cmd)
+  # A client already attached means the studio is on screen somewhere: don't open another.
+  if [ "${STUDIO_GUI:-0}" = 1 ] && pgrep -f -- "herdr --session ${STUDIO_SESSION:-x}\$" >/dev/null 2>&1; then
+    say "The studio is already open on this Mac."
+    return 0
+  fi
   if [ "${STUDIO_GUI:-0}" != 1 ] || ! is_macos; then
     # shellcheck disable=SC2086
     exec $attach
