@@ -41,6 +41,17 @@ Router backends (`ROUTER=`): `jev` (TypeSafe, needs `TYPESAFE_API_KEY`), `clef` 
 explicit addresses only, everything else goes to the architect). If Jev is unreachable the
 router falls back to `rules` for that message and says so in the log.
 
+## Who sent this? (and the honest limit)
+
+Each agent pane gets its own secret (`STUDIO_TOKEN`) when the studio splits it; the router
+pane alone gets the map. `studio send` signs id, from, to, text and time with it; the router
+checks the signature, rejects stale or repeated ids, and marks anything else **UNVERIFIED**.
+This stops an agent (or a prompt injected into one) from speaking as the architect by
+accident or by a cheap trick. It is not OS-enforced: every agent runs as the same macOS user,
+so a process that goes looking (`ps -E`) can read another pane's environment. The stronger
+version is a per-agent Unix socket checked with peer credentials; do that if the studio ever
+runs untrusted code. Role briefs also say a relayed message is never the owner's approval.
+
 ## Supervision
 
 The router runs in its own Herdr pane under `studio router`, a restart loop that logs every

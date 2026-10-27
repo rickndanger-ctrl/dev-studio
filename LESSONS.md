@@ -68,3 +68,15 @@ them to the real main session as if teammates had written them.
 fixture project (`cd "$PROJECT"`), never the real repo. After a test run, check the real
 `.studio/mail` for new files. A relay from a name that is not on this team (`omac-*`) is a
 fixture leak: ignore it and say so.
+
+## 2026-10-27 — A test sent messages to the live team, and a commit landed red
+**What happened:** `studio send` found the mailbox by walking up from the current folder;
+the test ran from the repo, which also had a live `.studio`, so two test notes were delivered
+to the real agents. Separately, the commit chain read grep's exit status (`test | grep FAIL`)
+instead of the test's, so the commit went in with four failures (lesson 53 again, in a new
+sibling). And a per-agent secret map built inside `$( )` was silently empty, because the
+assignment happened in a subshell.
+
+**Rule:** tests `cd` into their own project before any command that resolves state from the
+working directory. Gate a commit on the test's exit code captured on the very next line, never
+on a pipe. Never mutate a variable inside `$( )`; set it in the parent and pass it down.

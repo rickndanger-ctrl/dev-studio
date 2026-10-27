@@ -94,8 +94,12 @@ def cmd_send(a):
     print("queued %s -> %s" % (msg["id"], msg["to"]))
 
 
+MAX_AGE = 600       # seconds: an older signed message is a replay, not a note
+SEEN_IDS = set()    # ids this router process has already handled
+
+
 def sign(token, msg):
-    payload = "\x1f".join([msg["id"], msg["from"], msg["to"], msg["text"]]).encode()
+    payload = "\x1f".join([msg["id"], msg["from"], msg["to"], msg["text"], "%.3f" % float(msg["t"])]).encode()
     return hmac.new(token.encode(), payload, hashlib.sha256).hexdigest()
 
 
@@ -244,6 +248,11 @@ def verify_sender(msg, tokens):
         return False, "unsigned: sent from outside %s's pane" % msg["from"]
     if not hmac.compare_digest(sign(token, msg), msg["sig"]):
         return False, "bad signature: not sent by %s" % msg["from"]
+    if now() - float(msg.get("t", 0)) > MAX_AGE:
+        return False, "stale: signed %d s ago" % (now() - float(msg["t"]))
+    if msg["id"] in SEEN_IDS:
+        return False, "replay: id %s was already handled" % msg["id"]
+    SEEN_IDS.add(msg["id"])
     return True, ""
 
 

@@ -1,24 +1,28 @@
 # ✦ Dev Studio
 
-**Your AI dev team, one click away.** Click an icon in your Dock and a terminal opens with a
-full team of Claude Code sessions already running, named, and able to message each other.
+**Your AI dev team, one click away — and you can watch them talk.** Click the icon in your
+Dock and a window opens with a team of coding-agent sessions already running, plus a
+**board** that shows JEV routing every message between them: who sent what, who got it, how
+sure the router was, and who is working on what. No guessing.
 
 ![Dev Studio](assets/icon-solo.png)
 
-Each Mac runs its own complete, **lean** team:
+The team follows the cross-session blueprint, *Opus architects · Haiku relays · Sonnet executes*:
 
 | Pane | Model | Job |
 |---|---|---|
-| 🏛 **Architect** | Opus | plans, assigns work, approves before anything merges |
-| 🔨 **Builders** (2 by default) | Sonnet, or routed by Jev | write and test code, each in its own copy of the project |
-| ✨ **Studio dashboard** | none (a tiny script) | who's working, who needs you, memory left |
+| **Architect** | Opus | sets the rules, evaluates contract changes, signs off before merge |
+| **Main session** | Sonnet | builds the feature, syncs schemas, patches dependents |
+| **Workers** (2 by default) | Haiku | small delegated tasks, each in its own copy of the project |
+| **JEV router** | [TypeSafe Jev](https://typesafe.ai) (not an LLM session) | reads every peer message, decides who needs it, delivers it |
+| **Board** | a script | the picture: cards, decision bars, mailbox, session log |
+
+`studio up --codex` builds the same team with Codex instead of Claude Code.
 
 **Built for Macs with limited memory.** Before starting, the Studio checks how much memory
-is free and starts fewer builders if they wouldn't fit, so the Mac never grinds to a halt.
-The messenger pane is off by default to save memory (`MESSENGER=1` turns it on).
-
-Built on [Herdr](https://herdr.dev), which keeps every agent running in the background,
-restores the layout after a restart, and shows who's working, done, or waiting on you.
+is free and starts fewer workers if they wouldn't fit. Built on [Herdr](https://herdr.dev),
+which keeps every agent running in the background and tells the board who is working, done,
+or waiting on you.
 
 ## Install (once per Mac)
 
@@ -28,76 +32,41 @@ cd ~/dev-studio
 ./install.sh
 ```
 
-Run it on each Mini. It installs anything missing (Herdr, jq), saves your settings, adds a
-`studio` command, and puts the **Dev Studio** icon in your Dock.
-
-<details><summary>Two-Mac mode (optional)</summary>
-
-One Mac plans, the other builds: `./install.sh hq` on one and `./install.sh workshop` on the other.
-</details>
+It installs anything missing (Herdr, jq), saves your settings, adds a `studio` command, and
+puts the **Dev Studio** icon in your Dock. For the JEV router, put your TypeSafe key in
+`~/.zshrc`: `export TYPESAFE_API_KEY=…`. Without it the router falls back to plain rules.
 
 ## Every day
 
-1. Click **Dev Studio** in the Dock.
-2. Pick a project from the list.
-3. Talk to the architect. It hands work to the builders, and they report back.
+1. Click **Dev Studio** in the Dock and pick a project.
+2. The window opens on the **board** tab. Switch to the **team** tab to talk to the architect.
+3. Watch the board: every message the team sends crosses the router and shows up in the
+   session log with JEV's decision (`p=0.91 sharp → @main`).
 
 Click the icon again later and you're back in the same team, still running.
 
-### The dashboard
-| Light | Meaning |
-|---|---|
-| ⠋ spinning | working on it |
-| 🔴 **NEEDS YOU** | waiting for your answer (you'll hear a ping) |
-| ✅ | finished, take a look (you'll hear a chime) |
-| 🟢 | ready for work |
+## How a message travels
+
+An agent runs `studio send <me> @peer "one-line note"` (or `auto`). The router asks Jev three
+typed questions in one ~150 ms request — *which peer needs this first? forward, broadcast,
+escalate or drop? is it a note or a pasted dump?* — then code decides: an unsure answer goes
+to the architect, a dump is trimmed, and the note is delivered into the peer's terminal.
+Each message is signed with a secret only its own pane has, so no agent can speak as another;
+anything unsigned is delivered marked **UNVERIFIED**.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `studio up [project]` | open the team for a project |
+| `studio up [project] [--codex] [--router jev\|clef\|rules]` | open (or reopen) the team |
+| `studio ask "note"` | dry run: what would the router decide for this note? |
+| `studio send FROM @TO "note"` | send a note through the router (agents do this) |
 | `studio doctor` | check everything is installed |
-| `studio role solo\|hq\|workshop` | switch this Mac's role |
-| `studio stop` | stop every agent |
+| `studio stop` | stop the studio's Herdr session and every agent in it |
 
-Settings live in `~/.dev-studio/studio.conf`:
+Settings live in `~/.dev-studio/studio.conf` (`WORKERS`, models, `ROUTER`, `CLEF_URL`,
+`SOUNDS`). Per-project state (mailbox, `router.log`, `team.json`) lives in `<project>/.studio/`,
+kept out of git.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `BUILDERS` | 2 | builders to start (capped automatically by free memory) |
-| `MESSENGER` | 0 | 1 adds a Haiku messenger pane |
-| `MB_PER_AGENT` | 600 | memory budgeted per Claude session |
-| `MEM_RESERVE_MB` | 1536 | memory always left for macOS and your apps |
-| `ROUTER_CMD` | jev-claude | the router builders launch through, when installed |
-| `SOUNDS` | 1 | pings and chimes |
-
-## How the safety rules work
-
-- Same-Mac messages are delivered straight away (`crossSessionInbound: accept`).
-- Messages from another Mac need your approval (`isolatePeerMachines: true`).
-- A message from another agent is never treated as your approval, and each agent still asks
-  before risky actions.
-- Each builder works in its own git worktree, so builders never overwrite each other.
-- Only the architect signs off on merges to `main`.
-
-In two-Mac mode, for the Macs' Claude sessions to message each other, both need the same claude.ai
-sign-in and [Remote Control](https://code.claude.com/docs/en/cross-session-messaging).
-
-## Model routing (optional)
-
-If `jev-claude` ([jev-router](https://github.com/gargpratyush/jev-router)) is installed,
-builders launch through it, and Jev picks Haiku, Sonnet, or Opus for each turn. To use a
-different router, set `ROUTER_CMD` in `~/.dev-studio/studio.conf`. The architect is pinned
-to Opus and the messenger to Haiku.
-
-## Lessons
-
-[`LESSONS.md`](LESSONS.md) is added to every agent's role brief, so past mistakes aren't repeated.
-
-## Development
-
-```bash
-test/run.sh               # end-to-end test against a mock Herdr
-python3 assets/make_icons.py
-```
+## For the next engineer
+Read `HANDOFF.md`, `DESIGN.md` and `LESSONS.md`. Tests: `PATH="/bin:$PATH" /bin/bash test/run.sh`.
