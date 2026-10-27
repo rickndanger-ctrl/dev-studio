@@ -350,6 +350,8 @@
     let d;
     try { const r = await fetch("/api/state", { cache: "no-store" }); if (!r.ok) throw new Error(r.status); d = await r.json(); }
     catch (e) { $("#pulse").className = "live-dot stale"; $("#sub").textContent = "reconnecting…"; return; }
+    if (state.version && d.version && d.version !== state.version) { location.reload(); return; }   // new code deployed
+    state.version = d.version;
     state.data = d; state.lastGood = Date.now();
     $("#pulse").className = "live-dot " + ((Date.now() / 1000 - d.updated) > 6 ? "stale" : "ok");
     renderHeader(d); renderNodes(d);

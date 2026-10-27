@@ -352,13 +352,21 @@ open_window() {
 # runs under launchd; make sure it is up first.
 open_board_window() {
   [ "${BOARD_WINDOW:-auto}" = none ] && return 0
-  local url="http://localhost:$WEB_PORT/" chrome="/Applications/Google Chrome.app"
+  local url="http://localhost:$WEB_PORT/" chrome="/Applications/Google Chrome.app" marker="$STUDIO_DATA/run/board-window" pid
   curl -s -m 2 -o /dev/null "$url" || { cmd_web start >/dev/null 2>&1; sleep 1; }
   if [ -d "$chrome" ]; then
-    # Start Chrome through LaunchServices (so it outlives this launcher), then hand
-    # the app window to the running instance; the binary exits at once.
-    open -a "Google Chrome" >/dev/null 2>&1; sleep 1
-    "$chrome/Contents/MacOS/Google Chrome" "--app=$url" --window-size=1500,980 >/dev/null 2>&1 &
+    pid=$(pgrep -x "Google Chrome" | head -1)
+    # One board window per Chrome run: the marker remembers which Chrome we opened it in.
+    if [ -n "$pid" ] && [ "$(cat "$marker" 2>/dev/null)" = "$pid" ]; then return 0; fi
+    if [ -n "$pid" ]; then
+      # Chrome is up: the binary hands the app window to the running instance and exits.
+      "$chrome/Contents/MacOS/Google Chrome" "--app=$url" --window-size=1500,980 >/dev/null 2>&1 &
+    else
+      # Not running: LaunchServices starts it with the flags, independent of this launcher.
+      open -na "Google Chrome" --args "--app=$url" --window-size=1500,980
+      sleep 3; pid=$(pgrep -x "Google Chrome" | head -1)
+    fi
+    mkdir -p "$(dirname "$marker")"; printf '%s' "$pid" > "$marker"
   else
     open "$url"
   fi

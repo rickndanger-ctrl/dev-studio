@@ -90,6 +90,14 @@ def agent_tail(herdr, name, lines=40):
     return rows[-lines:]
 
 
+def asset_version():
+    """Changes whenever the page's files change, so an open board reloads itself after a deploy."""
+    try:
+        return "%d" % max(int(os.path.getmtime(os.path.join(STATIC, f))) for f in ("index.html", "app.js", "app.css"))
+    except OSError:
+        return "0"
+
+
 class Studio:
     def __init__(self, a):
         self.a = a
@@ -179,7 +187,7 @@ class Studio:
                              "decision": r.get("decision"), "p": r.get("p_peer"), "sharp": r.get("c_peer", 0) >= 0.5,
                              "verified": r.get("verified", True)})
         return {"name": self.a.name, "peer": {"name": self.a.peer_name, "url": self.a.peer} if self.a.peer else None,
-                "t": time.time(), "updated": self.updated, "team": team,
+                "t": time.time(), "updated": self.updated, "team": team, "version": asset_version(),
                 "router": {"backend": (team.get("router") or os.environ.get("ROUTER", "jev")), "decisions": len(routes),
                            "last": last, "last_model": last_model, "rate_per_min": len(recent)},
                 "mail": mail, "mem_free_mb": mem, "agents": agents, "hops": hops, "feed": feed[-150:],
