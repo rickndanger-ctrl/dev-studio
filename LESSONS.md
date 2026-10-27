@@ -101,3 +101,13 @@ so the router could no longer address anyone and the board showed nothing.
 **Rule:** anything that must outlive its launcher runs under launchd with KeepAlive, never as a
 background child. After a restore, treat a space whose team is not live (architect not a named
 agent) as dead and rebuild it. Test both with a real `kill -9`.
+
+## 2026-10-27 — A deploy by rsync --delete would have erased the team's own commits
+**What happened:** Mini 2 was kept in sync with `rsync -a --delete` of this repo from Mini 1.
+Meanwhile the studio's own team on Mini 2 committed and pushed real work into this repo
+(`examples/camera-motion`, a license). One more rsync would have deleted it. Caught only
+because `git log -1` on Mini 2 showed a commit that was not mine.
+
+**Rule:** a folder that is a git repo on another machine is updated with `git pull`, never by
+copying a tree over it. Before any copy-deploy, check `git log -1` and `git status` on the
+target. And brace variables before a colon in zsh (`${ws}:t2`): `$ws:t2` is a history modifier.
