@@ -114,6 +114,45 @@ def agents(herdr):
         return {}
 
 
+TAIL_CACHE = {}   # name -> (frame, text)
+NOISE = ("❯", "⏵⏵", "shift+tab", "esc to interrupt", "? for shortcuts", "Try \"", "auto mode", "PR #")
+
+
+def agent_now(herdr, name, frame):
+    """The last meaningful line on an agent's terminal: what it is doing right now.
+    Read every other frame so four agents cost two Herdr calls a second."""
+    hit = TAIL_CACHE.get(name)
+    if hit and frame - hit[0] < 2:
+        return hit[1]
+    text = ""
+    try:
+        out = subprocess.run(herdr.split() + ["agent", "read", name, "--source", "recent-unwrapped", "--lines", "20"],
+                             capture_output=True, text=True, timeout=5).stdout
+        for ln in reversed(out.splitlines()):
+            ln = clean(ln).strip()
+            if not ln or ln.count("─") + ln.count("═") > 4 or set(ln) <= set("─═│┌┐└┘┤├ ·") or any(k in ln for k in NOISE):
+                continue
+            text = ln
+            break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    TAIL_CACHE[name] = (frame, text)
+    return text
+
+
+LAST_LIVE = {}
+EVENTS = []   # state changes seen by this board: {"t", "kind": "state", "who", "was", "now"}
+
+
+def note_state_changes(live):
+    for name, st in live.items():
+        was = LAST_LIVE.get(name)
+        if was is not None and was != st:
+            EVENTS.append({"t": time.time(), "kind": "state", "who": name, "was": was, "now": st})
+    LAST_LIVE.clear(); LAST_LIVE.update(live)
+    del EVENTS[:-60]
+
+
 def clean_deep(v):
     if isinstance(v, str):
         return clean(v)
@@ -193,6 +232,8 @@ def render(a, frame, cols, rows_avail):
     except (OSError, ValueError):
         pass
     live = agents(a.herdr)
+    note_state_changes(live)
+    now_of = lambda n: agent_now(a.herdr, n, frame) if live.get(n) not in (None, "offline") else ""
     log = tail_log(os.path.join(a.studio, "router.log"))
     routes = [r for r in log if r.get("kind") == "route"]
     last = routes[-1] if routes else None
@@ -235,6 +276,10 @@ def render(a, frame, cols, rows_avail):
                   c(GREY, "  peers        ") + c(BOLD, "%d / %d active" % (active, len(peers))),
                   c(GREY, "  status       ") + status_cell(live.get(an, "offline"), frame),
                   c(GREY, "  transport    herdr · agent prompt"),
+                  c(GREY, "  talking to   ") + c(BLUE, next((", ".join(name_of(t) for t in r.get("to", [])) for r in reversed(routes) if r.get("from") == an), "–")),
+                  "",
+                  c(BOLD, "◆ Now"),
+                  c(GOLD, "  " + short(now_of(an) or "idle", 30)),
                   ""]
     arch_msgs = [r for r in routes if an in r.get("to", []) or r.get("from") == an][-3:]
     arch_lines.append(c(GREY, "last messages"))
@@ -249,7 +294,8 @@ def render(a, frame, cols, rows_avail):
     mn = main[0] if main else "main"
     main_box = box("%s · main session" % a.main_model.capitalize(),
                    [c(GREY, "builds & syncs schemas") + "   " + status_cell(live.get(mn, "offline"), frame),
-                    c(GREY, "last: ") + short(next((r.get("text", "") for r in reversed(routes) if r.get("from") == mn), "awaiting peer message"), 40)],
+                    c(GREY, "now:  ") + c(GOLD, short(now_of(mn) or "–", 36)),
+                    c(GREY, "last: ") + short(next((r.get("text", "") for r in reversed(routes) if r.get("from") == mn), "awaiting peer message"), 36)],
                    44, PINK)
     if last_model:
         lm = last_model
@@ -271,7 +317,8 @@ def render(a, frame, cols, rows_avail):
     wboxes = []
     for w in workers:
         wl = [c(BLUE, a.worker_model.capitalize()) + "  " + status_cell(live.get(w, "offline"), frame),
-              c(GREY, "last: ") + short(next((r.get("text", "") for r in reversed(routes) if w in r.get("to", [])), "–"), 16)]
+              c(GREY, "now: ") + c(GOLD, short(now_of(w) or "–", 17)),
+              c(GREY, "got: ") + short(next((r.get("text", "") for r in reversed(routes) if w in r.get("to", [])), "–"), 17)]
         wboxes.append(box(name_of(w), wl, 24, BLUE))
     worker_rows = columns(wboxes, 1) if wboxes else [c(GREY, "  no workers")]
     back = box("back to %s · sign off" % a.arch_model, [c(GREY, "peer: ") + short(next((r.get("text", "") for r in reversed(routes) if r.get("decision") == "escalate"), "message routing in progress"), 44)], 62, GREY)
@@ -298,23 +345,28 @@ def render(a, frame, cols, rows_avail):
     else:
         out += left + center + right
 
-    # Session log
+    # Live feed: router decisions, deliveries and every state change, in time order
     out.append("")
-    out.append("  " + c(BOLD, "session log") + c(GREY, "  ·  .studio/router.log"))
-    tail = [r for r in log if r.get("kind") in ("route", "delivered", "held", "failed", "error", "start")][-6:]
-    for r in tail:
+    out.append("  " + c(BOLD, "live feed") + c(GREY, "  ·  routes, deliveries, who started and finished"))
+    feed = [r for r in log if r.get("kind") in ("route", "delivered", "held", "failed", "error", "start")] + EVENTS
+    feed.sort(key=lambda r: r.get("t", 0))
+    for r in feed[-8:]:
         t = time.strftime("%H:%M:%S", time.localtime(r.get("t", 0)))
+        if r["kind"] == "state":
+            colr = GOLD if r["now"] == "working" else (GREEN if r["now"] in ("done", "idle") else RED)
+            out.append("  " + c(GREY, t) + "  " + pad(c(colr, r["now"]), 11) + c(BOLD, name_of(r["who"])) + c(GREY, "  %s → %s" % (r["was"], r["now"])))
+            continue
         who = r.get("router", "studio") if r["kind"] == "route" else r["kind"]
         if r["kind"] == "route":
             line = "%s %s → %s" % (short(r.get("text", ""), 60), r.get("decision", ""), ", ".join(name_of(x) for x in r.get("to", [])) or "nobody")
             p = ("p=%.2f %s" % (r["p_peer"], "sharp" if r.get("c_peer", 0) >= 0.5 else "soft")) if "p_peer" in r else short(r.get("note", ""), 40)
             if not r.get("verified", True):
                 line = c(RED, "unverified ") + line
-            out.append("  " + c(GREY, t) + "  " + pad(c(GOLD, who), 11) + pad(line, max(20, cols - 40)) + c(GREEN if "sharp" in p else GREY, p))
+            out.append("  " + c(GREY, t) + "  " + pad(c(GOLD, who), 11) + c(BOLD, name_of(r.get("from", ""))) + c(GREY, ": ") + pad(line, max(20, cols - 52)) + c(GREEN if "sharp" in p else GREY, p))
         else:
             out.append("  " + c(GREY, t) + "  " + pad(c(GREEN if r["kind"] == "delivered" else RED, who), 11) + c(GREY, "%s → %s %s" % (name_of(r.get("from", "")), name_of(r.get("to", "")), short(r.get("code", "") or r.get("error", "") or r.get("router", ""), 60))))
-    if not tail:
-        out.append("  " + c(GREY, "nothing routed yet"))
+    if not feed:
+        out.append("  " + c(GREY, "quiet: give the architect a task and watch here"))
 
     # Command line
     out.append("")
