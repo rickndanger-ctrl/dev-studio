@@ -63,6 +63,7 @@ fi
 # 5. Dock app.
 "$STUDIO_HOME/macos/make-app.sh" claude
 "$STUDIO_HOME/macos/make-app.sh" codex
+"$STUDIO_HOME/macos/pin-dock.sh"
 
 echo
 "$STUDIO_HOME/bin/studio" doctor || true

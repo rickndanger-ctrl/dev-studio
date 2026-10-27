@@ -73,12 +73,4 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rm -rf -- "$(dirname "$iconset")"
 touch "$app"   # make Finder pick up the new icon
 
-# Pin to the Dock once.
-if defaults read com.apple.dock persistent-apps 2>/dev/null | grep -qF "$name.app"; then
-  ok "$name is already in your Dock."
-else
-  defaults write com.apple.dock persistent-apps -array-add \
-    "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>file://${app// /%20}/</string><key>_CFURLStringType</key><integer>15</integer></dict></dict></dict>"
-  killall Dock
-  ok "$name added to your Dock."
-fi
+ok "$name.app built. Run macos/pin-dock.sh to put both studio apps in the Dock."

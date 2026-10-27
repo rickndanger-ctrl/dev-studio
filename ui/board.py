@@ -321,6 +321,7 @@ def main():
     frame = 0
     if not a.once:
         sys.stdout.write(ESC + "?25l" + ESC + "2J")
+    last, last_size = [], None
     try:
         while True:
             size = shutil.get_terminal_size((120, 40))
@@ -328,8 +329,22 @@ def main():
             if a.once:
                 sys.stdout.write("\n".join(rows) + "\n")
                 break
-            sys.stdout.write(ESC + "H" + "\n".join(pad(r, size.columns) for r in rows) + ESC + "J")
-            sys.stdout.flush()
+            rows = [pad(r, size.columns) for r in rows]
+            # Rewrite only the lines that changed: a full repaint every second flashes
+            # in some terminals. A resize repaints everything once.
+            if (size.columns, size.lines) != last_size:
+                sys.stdout.write(ESC + "2J")
+                last, last_size = [], (size.columns, size.lines)
+            out = []
+            for i, r in enumerate(rows):
+                if i >= len(last) or last[i] != r:
+                    out.append(ESC + "%d;1H" % (i + 1) + r)
+            if len(rows) < len(last):
+                out.append(ESC + "%d;1H" % (len(rows) + 1) + ESC + "J")
+            if out:
+                sys.stdout.write("".join(out))
+                sys.stdout.flush()
+            last = rows
             time.sleep(a.refresh)
             frame += 1
     except KeyboardInterrupt:
