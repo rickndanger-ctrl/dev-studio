@@ -13,6 +13,8 @@ import re
 import os
 import shutil
 import subprocess
+import unicodedata
+import warnings
 import sys
 import time
 
@@ -34,15 +36,25 @@ def c(color, s):
     return color + s + RESET
 
 
+def char_width(ch):
+    """Terminal columns one character takes. Wide and fullwidth are 2; everything
+    else 1. Keep the board to plain and box-drawing characters (no emoji, no
+    exotic brackets): one terminal drew U+2997 two columns wide and every
+    rewrite of that line scrolled the pane."""
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
 def plain_len(s):
-    """Visible width: strip ANSI codes. Keep the board free of emoji so this holds."""
+    """Visible width: strip ANSI codes, count wide characters as two."""
     out, i = 0, 0
     while i < len(s):
         if s[i] == "\033":
             j = s.find("m", i)
             i = j + 1 if j > 0 else len(s)
             continue
-        out += 1
+        out += char_width(s[i])
         i += 1
     return out
 
@@ -52,14 +64,14 @@ def pad(s, width):
     if n > width:
         # cut visible characters, keeping escapes
         res, seen, i = "", 0, 0
-        while i < len(s) and seen < width - 1:
+        while i < len(s) and seen + char_width(s[i]) <= width - 1:
             if s[i] == "\033":
                 j = s.find("m", i)
                 res += s[i:j + 1]
                 i = j + 1
                 continue
             res += s[i]
-            seen += 1
+            seen += char_width(s[i])
             i += 1
         return res + RESET + "…"
     return s + " " * (width - n)
@@ -193,7 +205,13 @@ def render(a, frame, cols, rows_avail):
     workers = [n for n, p in peers.items() if p.get("role", "").startswith("worker")]
     # omac-worker-1 -> @worker-1: strip the project prefix shared by every peer name.
     names = list(peers)
-    prefix = os.path.commonprefix(names) if len(names) > 1 else ""
+    prefix = ""
+    if len(names) > 1:
+        first = names[0]
+        n = 0
+        while n < len(first) and all(len(x) > n and x[n] == first[n] for x in names):
+            n += 1
+        prefix = first[:n]
     prefix = prefix[: prefix.rfind("-") + 1] if "-" in prefix else ""
     name_of = lambda n: "@" + clean(n[len(prefix):] if prefix and n.startswith(prefix) else n)
     active = sum(1 for n in peers if live.get(n) in ("working", "blocked"))
@@ -302,7 +320,7 @@ def render(a, frame, cols, rows_avail):
     out.append("")
     cmd = "claude --model %s --settings '{\"crossSessionInbound\":\"accept\"}'" % a.main_model if kind == "claude" else "codex -m %s" % a.main_model
     out.append("  " + c(GREY, "~/%s $ " % project) + c(BOLD, cmd) + c(GREEN, " ▍"))
-    out.append("  " + c(GREY, "%s ⦗ %d live ⦘  peers ⦗ %d active ⦘  router ⦗ %s ⦘  mem ⦗ %d MB free ⦘  %s" % (
+    out.append("  " + c(GREY, "%s [ %d live ]  peers [ %d active ]  router [ %s ]  mem [ %d MB free ]  %s" % (
         kind, sum(1 for n in peers if live.get(n, "offline") != "offline"), active, router_name.lower(), mem_free_mb(), time.strftime("%H:%M"))))
     return out[:rows_avail] if rows_avail else out
 
@@ -319,6 +337,10 @@ def terminal_size():
 
 
 def main():
+    # Nothing but the board may write to this terminal: a stray warning or
+    # traceback line scrolls the pane every frame (Python 3.15's commonprefix
+    # deprecation did exactly that). Warnings are silenced and stderr goes to a file.
+    warnings.simplefilter("ignore")
     p = argparse.ArgumentParser()
     p.add_argument("--studio", required=True)
     p.add_argument("--herdr", default="herdr")
@@ -331,6 +353,10 @@ def main():
     a = p.parse_args()
     frame = 0
     if not a.once:
+        try:
+            sys.stderr = open(os.path.join(a.studio, "board.err"), "a")
+        except OSError:
+            pass
         sys.stdout.write(ESC + "?25l" + ESC + "?7l" + ESC + "2J")   # hide cursor, no autowrap, clear
     last, last_size = [], None
     try:
@@ -340,7 +366,7 @@ def main():
             if a.once:
                 sys.stdout.write("\n".join(rows) + "\n")
                 break
-            rows = [pad(r, size.columns) for r in rows]
+            rows = [pad(r, max(20, size.columns - 1)) for r in rows]
             # Rewrite only the lines that changed: a full repaint every second flashes
             # in some terminals. A resize repaints everything once.
             if (size.columns, size.lines) != last_size:

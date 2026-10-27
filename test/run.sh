@@ -157,6 +157,7 @@ check "shows the mailbox"                    grep -q "PEER MAILBOX" <<<"$out"
 check "shows blocked main session"           grep -q "NEEDS YOU" <<<"$out"
 check "shows the session log"                grep -q "session log" <<<"$out"
 check "shows the launch command"             grep -q "crossSessionInbound" <<<"$out"
+check "nothing else printed (no warnings)"   sh -c "! grep -qi 'warning\|deprecat\|traceback' <<<'$out'"
 
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
