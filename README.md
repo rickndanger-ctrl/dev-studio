@@ -45,6 +45,10 @@ puts the **Dev Studio** icon in your Dock. For the JEV router, put your TypeSafe
 
 Click the icon again later and you're back in the same team, still running.
 
+If OMAC (the window manager) is running, the studio opens inside an **OMAC terminal tile**
+instead of a macOS Terminal window, so it sits in your tiled layout. Set `TERMINAL_APP` in
+`~/.dev-studio/studio.conf` to `omac`, `ghostty`, `iterm` or `terminal` to force one.
+
 ## How a message travels
 
 An agent runs `studio send <me> @peer "one-line note"` (or `auto`). The router asks Jev three

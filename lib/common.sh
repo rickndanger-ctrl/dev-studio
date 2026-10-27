@@ -71,7 +71,7 @@ load_config() {
   CODEX_ARCHITECT_MODEL=gpt-6.1-sol   # Codex models (your ~/.codex/config.toml default)
   CODEX_MAIN_MODEL=gpt-6.1-sol
   CODEX_WORKER_MODEL=gpt-6.1-sol
-  TERMINAL_APP=auto
+  TERMINAL_APP=auto           # auto picks an OMAC terminal tile when OMAC runs; or omac|ghostty|iterm|terminal
   SOUNDS=1
   # shellcheck source=/dev/null
   [ -f "$STUDIO_CONF" ] && . "$STUDIO_CONF"

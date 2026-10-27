@@ -284,12 +284,15 @@ open_window() {
   fi
   case ${TERMINAL_APP:-auto} in
     auto)
-      if [ -d /Applications/Ghostty.app ]; then TERMINAL_APP=ghostty
+      # OMAC's own terminal tile first, so the studio lands in the owner's window manager.
+      if command -v omac >/dev/null 2>&1 && pgrep -x OmacNative >/dev/null 2>&1; then TERMINAL_APP=omac
+      elif [ -d /Applications/Ghostty.app ]; then TERMINAL_APP=ghostty
       elif [ -d /Applications/iTerm.app ]; then TERMINAL_APP=iterm
       else TERMINAL_APP=terminal; fi ;;
   esac
   # shellcheck disable=SC2086
   case $TERMINAL_APP in
+    omac)    omac terminal "exec $attach" --title "Dev Studio" >/dev/null || osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null ;;
     ghostty) open -na Ghostty.app --args --title="Dev Studio" -e $attach ;;
     iterm)   osascript -e "tell application \"iTerm\" to create window with default profile command \"$attach\"" -e 'tell application "iTerm" to activate' ;;
     *)       osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null ;;
