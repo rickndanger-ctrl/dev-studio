@@ -1,0 +1,10 @@
+{
+  "id": "house_walkup",
+  "name": "House walk-up",
+  "description": "Camera tracks toward the front door, then tilts up to the roofline.",
+  "fps": 24,
+  "segments": [
+    {"preset": "dolly_in", "duration_s": 3.0},
+    {"preset": "tilt_up", "duration_s": 1.5}
+  ]
+}

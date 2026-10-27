@@ -1,0 +1,12 @@
+{
+  "id": "example_shot",
+  "name": "Example shot",
+  "description": "Dolly in, orbit left, dolly in again, then crane up.",
+  "fps": 24,
+  "segments": [
+    {"preset": "dolly_in", "duration_s": 2},
+    {"preset": "orbit_left", "duration_s": 3, "params": {"radius": null}},
+    {"preset": "dolly_in", "duration_s": 1, "params": {"frame": "camera"}},
+    {"preset": "crane_up", "duration_s": 1.5, "params": {"frame": "camera"}}
+  ]
+}

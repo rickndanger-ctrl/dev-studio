@@ -18,6 +18,8 @@ from camera_motion.engine.camera_path import path
 from camera_motion.export.formats import export_text
 from camera_motion.preview.anim_svg import render_animated
 from camera_motion.presets import load_help
+from camera_motion.presets.validate import load_json
+from camera_motion.sequences.build import build as build_sequence
 from camera_motion.web import export_frames
 
 EASINGS = ("linear", "ease_in", "ease_out", "ease_in_out")
@@ -34,6 +36,25 @@ DOWNLOADS = {
 }
 HTML = "text/html; charset=utf-8"
 JSON = "application/json"
+
+
+SEQUENCE_SAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sequences", "samples")
+
+
+def _bundled_sequences():
+    """The bundled sample sequences, read once at startup. Only these ids are served."""
+    names = sorted(n for n in os.listdir(SEQUENCE_SAMPLES) if n.endswith(".json"))
+    return [load_json(os.path.join(SEQUENCE_SAMPLES, n)) for n in names]
+
+
+def _sequence_summary(seq, frames):
+    return {
+        "id": seq["id"],
+        "name": seq.get("name", seq["id"]),
+        "description": seq.get("description", ""),
+        "segments": seq["segments"],
+        "frame_count": len(frames),
+    }
 
 
 class ApiError(Exception):
@@ -58,6 +79,11 @@ class Viewer:
         with open(catalog_path, encoding="utf-8") as f:
             self.presets = json.load(f)
         self.by_id = {preset["id"]: preset for preset in self.presets}
+        self.sequences = {}
+        self.sequence_frames = {}
+        for seq in _bundled_sequences():
+            self.sequences[seq["id"]] = seq
+            self.sequence_frames[seq["id"]] = build_sequence(seq, self.presets)
         self.help = load_help() if help_data is None else help_data
         doc = export_frames.build(catalog_path)
         self.frames_json = json.dumps(doc, indent=2).encode("utf-8")
@@ -68,6 +94,11 @@ class Viewer:
         if preset_id not in self.by_id:
             raise ApiError(404, f"unknown preset {preset_id!r}")
         return self.by_id[preset_id]
+
+    def sequence(self, seq_id):
+        if seq_id not in self.sequences:
+            raise ApiError(404, f"unknown sequence {seq_id!r}")
+        return self.sequences[seq_id]
 
 
 def _float(key, value):
@@ -192,6 +223,37 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return self._send(200, JSON, viewer.frames_json)
         if route == "/api/presets":
             return self._json([dict(p, help=viewer.help.get(p["id"], {})) for p in viewer.presets])
+
+        if route == "/api/sequences":
+            return self._json([
+                _sequence_summary(seq, viewer.sequence_frames[seq_id])
+                for seq_id, seq in viewer.sequences.items()
+            ])
+
+        match = re.fullmatch(r"/api/sequence/([^/]+)", route)
+        if match:
+            seq_id = match.group(1)
+            seq = viewer.sequence(seq_id)
+            return self._json({"id": seq_id, "fps": seq["fps"], "frames": viewer.sequence_frames[seq_id]})
+
+        match = re.fullmatch(r"/anim/sequence/([^/]+)\.svg", route)
+        if match:
+            seq_id = match.group(1)
+            seq = viewer.sequence(seq_id)
+            body = _svg_bytes(seq_id, seq.get("name"), viewer.sequence_frames[seq_id], seq["fps"])
+            return self._send(200, "image/svg+xml", body)
+
+        match = re.fullmatch(r"/download/sequence/([^/]+)\.([^/]+)", route)
+        if match:
+            seq_id, fmt = match.group(1), match.group(2)
+            seq = viewer.sequence(seq_id)
+            if fmt not in DOWNLOADS:
+                raise ApiError(400, "format must be one of " + ", ".join(DOWNLOADS))
+            kind, ext, content_type = DOWNLOADS[fmt]
+            preset = {"id": seq_id, "name": seq.get("name", seq_id)}
+            text = export_text(kind, viewer.sequence_frames[seq_id], preset, fps=seq["fps"])
+            disposition = ("Content-Disposition", f"attachment; filename={seq_id}.{ext}")
+            return self._send(200, content_type, text.encode("utf-8"), headers=[disposition])
 
         match = re.fullmatch(r"/api/path/([^/]+)", route)
         if match:

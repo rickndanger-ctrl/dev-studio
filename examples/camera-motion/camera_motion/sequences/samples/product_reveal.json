@@ -1,0 +1,10 @@
+{
+  "id": "product_reveal",
+  "name": "Product reveal",
+  "description": "The camera dollies in toward the product, then orbits around it.",
+  "fps": 24,
+  "segments": [
+    {"preset": "dolly_in", "duration_s": 2.0, "params": {"distance": 2.0}},
+    {"preset": "orbit_left", "duration_s": 3.0, "params": {"radius": null}}
+  ]
+}

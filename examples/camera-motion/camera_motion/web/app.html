@@ -20,6 +20,13 @@ a { color: var(--accent); }
 .error { color: var(--error); }
 [hidden] { display: none !important; }
 
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.tabs a { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); text-decoration: none; }
+.tabs a[aria-current="page"] { border-color: var(--accent); font-weight: 600; }
+.sequence { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.sequence img { display: block; width: 100%; height: auto; }
+.sequence h3 { margin: 10px 0 4px; font-size: 1rem; }
+.sequence p { margin: 4px 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 .tile { display: block; text-decoration: none; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .tile img { display: block; width: 100%; height: auto; }
@@ -42,10 +49,20 @@ a { color: var(--accent); }
   <a href="/live.html">Live viewer</a>
 </header>
 
+<nav class="tabs" aria-label="Sections">
+  <a id="tab-presets" href="#">Presets</a>
+  <a id="tab-sequences" href="#sequences">Sequences</a>
+</nav>
+
 <main>
   <section id="gallery" aria-label="Presets">
     <p id="status" class="muted">Loading presets…</p>
     <div id="grid" class="grid"></div>
+  </section>
+
+  <section id="sequences" aria-label="Sequences" hidden>
+    <p id="seq-status" class="muted">Loading sequences…</p>
+    <div id="seq-grid" class="grid"></div>
   </section>
 
   <section id="detail" aria-label="Preset detail" hidden>
@@ -100,6 +117,7 @@ a { color: var(--accent); }
   let presets = [];
   let byId = new Map();
   let loaded = false;
+  let sequencesLoaded = false;
 
   let presetId = null;
   let current = {};
@@ -189,11 +207,13 @@ a { color: var(--accent); }
     presetId = null;
     clearTimeout(timer);
     $("detail").hidden = true;
+    $("sequences").hidden = true;
     $("gallery").hidden = false;
   }
 
   function showDetail(id) {
     $("gallery").hidden = true;
+    $("sequences").hidden = true;
     $("detail").hidden = false;
     const preset = byId.get(id);
     if (!preset) {
@@ -208,9 +228,63 @@ a { color: var(--accent); }
     buildDetail(preset);
   }
 
+  function setTab(name) {
+    for (const tab of ["presets", "sequences"]) {
+      const link = $("tab-" + tab);
+      if (tab === name) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    }
+  }
+
+  function segmentText(segments) {
+    return segments.map((s) => `${s.preset} ${Number(s.duration_s).toFixed(1)} s`).join(" -> ");
+  }
+
+  function renderSequences(list) {
+    $("seq-grid").replaceChildren(
+      ...list.map((seq) => {
+        const id = encodeURIComponent(seq.id);
+        return el("article", { class: "sequence" }, [
+          el("img", { src: `/anim/sequence/${id}.svg`, alt: seq.name || seq.id, loading: "lazy" }),
+          el("h3", { text: seq.name || seq.id }),
+          el("p", { class: "muted", text: seq.description || "" }),
+          el("p", { class: "segments", text: segmentText(seq.segments || []) }),
+          el("div", { class: "downloads" }, FORMATS.map(([fmt, label]) =>
+            el("a", { class: "button", href: `/download/sequence/${id}.${fmt}`, text: label })
+          )),
+        ]);
+      })
+    );
+  }
+
+  async function loadSequences() {
+    if (sequencesLoaded) return;
+    try {
+      const res = await fetch("/api/sequences");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      renderSequences(await res.json());
+      $("seq-status").hidden = true;
+      sequencesLoaded = true;
+    } catch (err) {
+      $("seq-status").className = "error";
+      $("seq-status").textContent = `Could not load sequences (${err.message}).`;
+    }
+  }
+
+  function showSequences() {
+    presetId = null;
+    clearTimeout(timer);
+    $("gallery").hidden = true;
+    $("detail").hidden = true;
+    $("sequences").hidden = false;
+    loadSequences();
+  }
+
   function route() {
-    if (!loaded) return;
     const id = decodeURIComponent(location.hash.slice(1));
+    setTab(id === "sequences" ? "sequences" : "presets");
+    if (id === "sequences") return showSequences();
+    if (!loaded) return;
     if (!id) showGallery();
     else showDetail(id);
   }
@@ -254,7 +328,9 @@ a { color: var(--accent); }
   }
 
   window.addEventListener("hashchange", route);
+  setTab(location.hash === "#sequences" ? "sequences" : "presets");
   loadPresets();
+  if (location.hash === "#sequences") showSequences();
 })();
 </script>
 </body>

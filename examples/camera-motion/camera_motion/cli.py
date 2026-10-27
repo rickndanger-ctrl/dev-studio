@@ -6,6 +6,7 @@ Usage: python3 -m camera_motion.cli <command> [options]
   preview  <id|file> -o out.svg [--animate] [--catalog FILE]  render an SVG preview
   export   <id|file> --format re10k|json|blender|gltf -o out [--fps --seconds --width --height]
   serve    [--port 8790]                          serve the web viewer
+  sequence <file|sample id> [--export FORMAT | --preview] -o OUT   build a shot sequence
 
 <id|file>: an existing file is loaded as one preset; otherwise the id is looked up in
 --catalog, or in the bundled catalog when --catalog is not given.
@@ -13,6 +14,7 @@ Usage: python3 -m camera_motion.cli <command> [options]
 import argparse
 import json
 import os
+import re
 import sys
 
 from camera_motion.engine.camera_path import path as camera_path
@@ -23,6 +25,8 @@ from camera_motion.presets import load_help
 DEFAULT_PORT = 8790
 
 BUNDLED_CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "catalog.json")
+SEQUENCE_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sequences", "samples")
+SAMPLE_ID = re.compile(r"[a-z0-9_]+")
 
 
 class UnknownPreset(Exception):
@@ -134,6 +138,57 @@ def _cmd_match(args):
     return 0
 
 
+def _load_sequence(arg):
+    """Return the sequence dict for an existing file, or for a bundled sample id."""
+    if os.path.isfile(arg):
+        path_ = arg
+    elif SAMPLE_ID.fullmatch(arg) and os.path.isfile(os.path.join(SEQUENCE_SAMPLES, arg + ".json")):
+        path_ = os.path.join(SEQUENCE_SAMPLES, arg + ".json")
+    else:
+        samples = sorted(name[:-5] for name in os.listdir(SEQUENCE_SAMPLES) if name.endswith(".json"))
+        raise ValueError(f"no sequence file or sample {arg!r}; samples: {', '.join(samples)}")
+    with open(path_, encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"{path_} is not valid JSON: {err}") from None
+
+
+def _cmd_sequence(args):
+    from camera_motion.sequences.build import build
+
+    if args.export and args.preview:
+        print("error: choose one of --export or --preview", file=sys.stderr)
+        return 1
+    if (args.export or args.preview) and not args.out:
+        print("error: -o/--out is required with --export or --preview", file=sys.stderr)
+        return 1
+    try:
+        sequence = _load_sequence(args.sequence)
+        frames = build(sequence, _load_catalog(args.catalog))
+    except ValueError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+
+    fps = sequence["fps"]
+    name = sequence.get("name") or sequence["id"]
+    if args.export:
+        text = export_text(args.export, frames, {"id": sequence["id"], "name": name}, fps=fps)
+        _ensure_parent(args.out)
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(text)
+    elif args.preview:
+        from camera_motion.preview.anim_svg import render_animated
+
+        _ensure_parent(args.out)
+        render_animated(frames, args.out, name, fps=fps)
+    else:
+        summary = {"id": sequence["id"], "fps": fps, "frames": len(frames),
+                   "first": frames[0], "last": frames[-1]}
+        print(json.dumps(summary, indent=2))
+    return 0
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(prog="camera_motion", description="Camera motion presets.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -185,6 +240,15 @@ def _build_parser():
     p_match = sub.add_parser("match", help="rank catalog presets by how well they match a camera file")
     p_match.add_argument("file", help="camera file to read")
     p_match.set_defaults(handler=_cmd_match)
+
+    p_sequence = sub.add_parser("sequence", help="build a shot sequence from catalog presets")
+    p_sequence.add_argument("sequence", help="sequence JSON file or a bundled sample id")
+    group = p_sequence.add_mutually_exclusive_group()
+    group.add_argument("--export", choices=FORMATS, help="export the frames as re10k, json, blender or gltf")
+    group.add_argument("--preview", action="store_true", help="render an animated SVG preview")
+    p_sequence.add_argument("-o", "--out", help="output file for --export or --preview")
+    add_catalog(p_sequence)
+    p_sequence.set_defaults(handler=_cmd_sequence)
 
     return parser
 

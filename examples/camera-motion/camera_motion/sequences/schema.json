@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "camera-motion/sequences/schema.json",
+  "title": "Camera shot sequence",
+  "description": "A shot made of catalog presets played one after another; each segment starts exactly where the previous one ended.",
+  "$comment": "Rules JSON Schema cannot express, enforced by sequences/validate.py: segments[].preset must be an id in presets/catalog.json; segments[].params are merged over that preset's params, where a value of null removes that param (for example {\"radius\": null} lets an orbit keep the current distance), and the merged preset must pass presets/schema.json (so an override can change or remove values but cannot add a param the preset type does not have). Use {\"frame\": \"camera\"} on a dolly, dolly_zoom or crane that follows a turn so it moves along the camera's own axes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "description",
+    "fps",
+    "segments"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "preset",
+          "duration_s"
+        ],
+        "properties": {
+          "preset": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "duration_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 60
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

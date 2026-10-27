@@ -72,6 +72,21 @@ class AppHtmlTests(unittest.TestCase):
         self.assertIn("Feel: ", self.script)
         self.assertNotIn("innerHTML", self.script)
 
+    def test_has_presets_and_sequences_tabs(self):
+        links = {(name, value) for tag, name, value in self.parser.attrs if tag == "a"}
+        self.assertIn(("href", "#sequences"), links)
+        self.assertIn(("id", "tab-presets"), links)
+        self.assertIn(("id", "tab-sequences"), links)
+        self.assertIn(">Presets</a>", self.text)
+        self.assertIn(">Sequences</a>", self.text)
+
+    def test_sequences_tab_uses_sequence_routes_via_dom(self):
+        self.assertIn("/api/sequences", self.script)
+        self.assertIn("/anim/sequence/", self.script)
+        self.assertIn("/download/sequence/", self.script)
+        self.assertIn('" -> "', self.script)
+        self.assertNotIn("innerHTML", self.script)
+
     def test_references_all_download_formats(self):
         self.assertIn("/download/", self.script)
         for fmt in FORMATS:

@@ -76,6 +76,13 @@ Line 0 is `# <preset name>`.
 - **glTF:** no conversion needed, glTF is Y-up like the engine.
   The fov is taken from the first frame only (glTF cameras do not animate fov here).
 
+## Sequences
+
+A sequence chains presets into one shot. Three samples are bundled: `establishing`,
+`house_walkup` and `product_reveal`. They also appear in the Sequences tab of the web viewer.
+
+    camera-motion sequence establishing --preview -o establishing.svg
+
 ## Example: dolly_in
 
 `dolly_in` moves the camera 1 unit toward the subject with `ease_in_out`, 3 s at 24 fps

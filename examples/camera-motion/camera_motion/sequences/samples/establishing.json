@@ -1,0 +1,11 @@
+{
+  "id": "establishing",
+  "name": "Establishing shot",
+  "description": "The camera rises, sweeps across the scene, then pulls back to reveal the full landscape.",
+  "fps": 24,
+  "segments": [
+    {"preset": "crane_up", "duration_s": 2.0},
+    {"preset": "pan_left", "duration_s": 2.0},
+    {"preset": "dolly_out", "duration_s": 2.0, "params": {"frame": "camera"}}
+  ]
+}

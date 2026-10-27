@@ -244,5 +244,94 @@ class ImportMatchTests(unittest.TestCase):
         self.assertEqual(set(data["frames"][0]), {"t", "position", "rotation", "fov"})
 
 
+SEQUENCE_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sequences", "samples")
+SVG_NS = "{http://www.w3.org/2000/svg}"
+
+
+def _sample_ids():
+    return sorted(name[:-5] for name in os.listdir(SEQUENCE_SAMPLES) if name.endswith(".json"))
+
+
+class SequenceCliTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+
+    def out_path(self, name):
+        return os.path.join(self.dir, name)
+
+    def test_samples_are_the_three_bundled_ones(self):
+        self.assertEqual(_sample_ids(), ["establishing", "house_walkup", "product_reveal"])
+
+    def test_each_sample_prints_first_last_and_frame_count(self):
+        for sample in _sample_ids():
+            with self.subTest(sample=sample):
+                code, out, err = _run(["sequence", sample])
+                self.assertEqual(code, 0, err)
+                data = json.loads(out)
+                self.assertEqual(data["id"], sample)
+                self.assertGreater(data["frames"], 1)
+                self.assertIn("first", data)
+                self.assertIn("last", data)
+
+    def test_each_export_format_parses(self):
+        sample = _sample_ids()[0]
+        code, out, _ = _run(["sequence", sample])
+        frame_count = json.loads(out)["frames"]
+
+        target = self.out_path("seq.json")
+        code, _, err = _run(["sequence", sample, "--export", "json", "-o", target])
+        self.assertEqual(code, 0, err)
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(len(json.load(f)["frames"]), frame_count)
+
+        target = self.out_path("seq.txt")
+        code, _, err = _run(["sequence", sample, "--export", "re10k", "-o", target])
+        self.assertEqual(code, 0, err)
+        with open(target, encoding="utf-8") as f:
+            self.assertEqual(len(parse_re10k(f.read().splitlines())), frame_count)
+
+        target = self.out_path("seq.py")
+        code, _, err = _run(["sequence", sample, "--export", "blender", "-o", target])
+        self.assertEqual(code, 0, err)
+        with open(target, encoding="utf-8") as f:
+            compile(f.read(), target, "exec")
+
+        target = self.out_path("seq.gltf")
+        code, _, err = _run(["sequence", sample, "--export", "gltf", "-o", target])
+        self.assertEqual(code, 0, err)
+        with open(target, encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["animations"])
+
+    def test_preview_is_svg_with_one_animate_motion(self):
+        target = self.out_path("seq.svg")
+        code, _, err = _run(["sequence", _sample_ids()[0], "--preview", "-o", target])
+        self.assertEqual(code, 0, err)
+        root = ET.parse(target).getroot()
+        self.assertEqual(len(root.findall(f".//{SVG_NS}animateMotion")), 1)
+
+    def test_invalid_sequence_exits_1_with_one_error_line(self):
+        bad = self.out_path("bad.json")
+        with open(bad, "w", encoding="utf-8") as f:
+            json.dump({"id": "bad"}, f)
+        code, out, err = _run(["sequence", bad])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        lines = [line for line in err.splitlines() if line]
+        self.assertEqual(len(lines), 1, err)
+        self.assertTrue(lines[0].startswith("error:"), err)
+
+    def test_unknown_sample_id_exits_1(self):
+        code, _, err = _run(["sequence", "no_such_sequence"])
+        self.assertEqual(code, 1)
+        self.assertIn("error:", err)
+
+    def test_export_needs_out(self):
+        code, _, err = _run(["sequence", _sample_ids()[0], "--export", "json"])
+        self.assertEqual(code, 1)
+        self.assertIn("-o/--out", err)
+
+
 if __name__ == "__main__":
     unittest.main()

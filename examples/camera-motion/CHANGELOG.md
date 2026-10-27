@@ -17,6 +17,8 @@ All notable changes to this project are recorded here. The format follows
 - Exports: RealEstate10K text, camera JSON, a Blender script and glTF 2.0.
 - Importers for RealEstate10K, camera JSON and glTF, and a match check.
 - A web viewer and a JSON API, served on 127.0.0.1.
+- Shot sequences: chain presets into one shot, with `frame: "camera"` and an optional
+  orbit `radius`. Added the `sequence` command and a Sequences tab in the web viewer.
 - `camera-motion doctor`, which checks the install.
 - A tutorial that installs into a fresh virtual environment and runs every
   command it shows.

@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 import unittest
 import xml.etree.ElementTree as ET
@@ -118,6 +119,86 @@ class ServerTests(unittest.TestCase):
         self.assertEqual((status, ctype), (200, "model/gltf+json"))
         self.assertEqual(disposition, "attachment; filename=dolly_in.gltf")
         self.assertTrue(json.loads(body)["animations"])
+
+    # --- sequences ------------------------------------------------------------------
+
+    def sequence_summaries(self):
+        return {s["id"]: s for s in json.loads(self.get("/api/sequences")[3])}
+
+    def test_sequences_list(self):
+        status, ctype, _, body = self.get("/api/sequences")
+        self.assertEqual((status, ctype), (200, JSON))
+        seqs = json.loads(body)
+        self.assertEqual({s["id"] for s in seqs}, {"establishing", "house_walkup", "product_reveal"})
+        for s in seqs:
+            with self.subTest(id=s["id"]):
+                self.assertEqual(set(s), {"id", "name", "description", "segments", "frame_count"})
+                self.assertIsInstance(s["segments"], list)
+                self.assertGreater(len(s["segments"]), 0)
+                self.assertGreater(s["frame_count"], 1)
+
+    def test_sequence_segments_match_sample_file(self):
+        samples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sequences", "samples")
+        for s in json.loads(self.get("/api/sequences")[3]):
+            with self.subTest(id=s["id"]):
+                with open(os.path.join(samples, s["id"] + ".json"), encoding="utf-8") as f:
+                    sample = json.load(f)
+                self.assertEqual([seg["preset"] for seg in s["segments"]], [seg["preset"] for seg in sample["segments"]])
+                self.assertEqual(s["segments"], sample["segments"])
+
+    def test_sequence_frames(self):
+        status, ctype, _, body = self.get("/api/sequence/establishing")
+        self.assertEqual((status, ctype), (200, JSON))
+        data = json.loads(body)
+        self.assertEqual(data["id"], "establishing")
+        self.assertEqual(data["fps"], 24)
+        self.assertEqual(len(data["frames"]), self.sequence_summaries()["establishing"]["frame_count"])
+        self.assertEqual(set(data["frames"][0]), {"t", "position", "rotation", "fov"})
+
+    def test_sequence_svg(self):
+        status, ctype, _, body = self.get("/anim/sequence/establishing.svg")
+        self.assertEqual((status, ctype), (200, "image/svg+xml"))
+        self.assertEqual(ET.fromstring(body).tag.split("}")[-1], "svg")
+
+    def test_sequence_downloads(self):
+        count = self.sequence_summaries()["house_walkup"]["frame_count"]
+        expected = {
+            "json": (JSON, "json"),
+            "re10k": ("text/plain; charset=utf-8", "txt"),
+            "py": ("text/x-python; charset=utf-8", "py"),
+            "gltf": ("model/gltf+json", "gltf"),
+        }
+        for fmt, (ctype, ext) in expected.items():
+            with self.subTest(fmt=fmt):
+                status, got_type, disposition, body = self.get(f"/download/sequence/house_walkup.{fmt}")
+                self.assertEqual((status, got_type), (200, ctype))
+                self.assertEqual(disposition, f"attachment; filename=house_walkup.{ext}")
+                if fmt == "json":
+                    self.assertEqual(len(json.loads(body)["frames"]), count)
+                elif fmt == "re10k":
+                    self.assertEqual(len(parse_re10k(body.decode("utf-8").splitlines())), count)
+                elif fmt == "py":
+                    compile(body.decode("utf-8"), "house_walkup.py", "exec")
+                else:
+                    self.assertTrue(json.loads(body)["animations"])
+
+    def test_unknown_sequence_is_404(self):
+        for route in ("/api/sequence/nope", "/anim/sequence/nope.svg", "/download/sequence/nope.json"):
+            with self.subTest(route=route):
+                self.assert_error(route, 404)
+
+    def test_sequence_traversal_is_404(self):
+        for route in (
+            "/api/sequence/..%2Fpresets%2Fcatalog",
+            "/anim/sequence/..%2F..%2Fsecret.svg",
+            "/download/sequence/..%2F..%2Fsecret.json",
+            "/download/sequence/../../etc/passwd.json",
+        ):
+            with self.subTest(route=route):
+                self.assert_error(route, 404)
+
+    def test_unknown_sequence_format_is_400(self):
+        self.assert_error("/download/sequence/establishing.exe", 400)
 
     # --- overrides ----------------------------------------------------------------
 
