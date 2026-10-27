@@ -163,6 +163,22 @@ print("ok")
 PYT
 check "loopback and tailnet only"           test "$?" = 0
 
+echo "Web server binds without a reverse-DNS lookup"
+rc=0
+python3 - "$ROOT/ui/web.py" <<'PYT' || rc=$?
+import importlib.util, socket, sys
+from http.server import BaseHTTPRequestHandler
+def no_lookup(*args, **kwargs):
+    raise AssertionError("socket.getfqdn was called while binding")
+socket.getfqdn = no_lookup
+spec = importlib.util.spec_from_file_location("web", sys.argv[1]); web = importlib.util.module_from_spec(spec); spec.loader.exec_module(web)
+srv = web.make_server(0, BaseHTTPRequestHandler)
+assert srv.server_address[0] == "0.0.0.0" and srv.server_name == "0.0.0.0", (srv.server_address, srv.server_name)
+srv.server_close()
+print("ok")
+PYT
+check "binds with getfqdn patched to raise" test "$rc" = 0
+
 echo "Web API"
 python3 "$ROOT/ui/web.py" --studio "$PROJECT/.studio" --herdr "$HERDR" --port 8797 --name test-studio > "$T/web.log" 2>&1 &
 WEB_PID=$!

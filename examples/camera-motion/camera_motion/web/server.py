@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import socketserver
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -288,7 +289,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
         raise ApiError(404, f"no route for {route!r}")
 
 
+class _Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in HTTPServer.server_bind.
+
+    HTTPServer.server_bind calls socket.getfqdn(), which is slow on macOS CI runners. The
+    server name is only informational here, so the bound address is used instead.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
+
 def make_server(viewer, port=0):
-    """A ThreadingHTTPServer on 127.0.0.1:port serving viewer. Port 0 picks a free port."""
+    """A server on 127.0.0.1:port serving viewer. Port 0 picks a free port."""
     handler = type("Handler", (ViewerHandler,), {"viewer": viewer})
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    return _Server(("127.0.0.1", port), handler)

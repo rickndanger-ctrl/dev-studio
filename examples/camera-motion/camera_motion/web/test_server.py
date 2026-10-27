@@ -1,9 +1,11 @@
 import http.client
 import json
 import os
+import socket
 import threading
 import unittest
 import xml.etree.ElementTree as ET
+from unittest import mock
 
 from camera_motion.export.formats import parse_re10k
 from camera_motion.web.server import Viewer, make_server
@@ -259,6 +261,23 @@ class ServerTests(unittest.TestCase):
 
     def test_binds_to_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
+
+
+class BindTests(unittest.TestCase):
+    """Binding must not look up the machine's full name: that reverse-DNS lookup is slow on macOS CI."""
+
+    def test_make_server_does_not_call_getfqdn(self):
+        def no_lookup(*args, **kwargs):
+            raise AssertionError("socket.getfqdn was called while binding")
+
+        with mock.patch.object(socket, "getfqdn", side_effect=no_lookup):
+            httpd = make_server(Viewer(app_html=APP, index_html=LIVE, help_data=STUB_HELP), port=0)
+        try:
+            self.assertEqual(httpd.server_address[0], "127.0.0.1")
+            self.assertEqual(httpd.server_name, "127.0.0.1")
+            self.assertEqual(httpd.server_port, httpd.server_address[1])
+        finally:
+            httpd.server_close()
 
 
 if __name__ == "__main__":

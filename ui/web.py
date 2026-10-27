@@ -22,6 +22,7 @@ import ipaddress
 import json
 import os
 import re
+import socketserver
 import subprocess
 import sys
 import threading
@@ -310,6 +311,25 @@ def make_handler(a, studio):
     return H
 
 
+class _Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in HTTPServer.server_bind.
+
+    HTTPServer.server_bind calls socket.getfqdn(), which is slow on macOS CI runners. The
+    server name is only informational here, so the bound address is used instead.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
+
+
+def make_server(port, handler):
+    """The studio's web server on every interface (the tailnet and loopback are checked per request)."""
+    return _Server(("0.0.0.0", port), handler)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--studio", required=True)
@@ -327,7 +347,7 @@ def main():
     studio.refresh()
     stop = threading.Event()
     threading.Thread(target=poll, args=(studio, stop), daemon=True).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(a, studio))
+    srv = make_server(a.port, make_handler(a, studio))
     print("studio web · %s · port %d" % (a.name, a.port), flush=True)
     try:
         srv.serve_forever()
