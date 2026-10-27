@@ -73,6 +73,10 @@ load_config() {
   CODEX_ARCHITECT_MODEL=gpt-6.1-sol   # Codex models (your ~/.codex/config.toml default)
   CODEX_MAIN_MODEL=gpt-6.1-sol
   CODEX_WORKER_MODEL=gpt-6.1-sol
+  WEB_PORT=8787               # the board as a web page (studio web), for phones and laptops on Tailscale
+  STUDIO_NAME=$(scutil --get ComputerName 2>/dev/null || hostname -s)   # shown in the web page header
+  PEER_URL=''                 # the other Mac's board, e.g. http://100.64.0.2:8787 (header link)
+  PEER_NAME='the other Mac'
   TERMINAL_APP=auto           # auto picks an OMAC terminal tile when OMAC runs; or omac|ghostty|iterm|terminal
   SOUNDS=1
   # shellcheck source=/dev/null

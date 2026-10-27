@@ -115,7 +115,7 @@ def agents(herdr):
 
 
 TAIL_CACHE = {}   # name -> (frame, text)
-NOISE = ("❯", "⏵⏵", "shift+tab", "esc to interrupt", "? for shortcuts", "Try \"", "auto mode", "PR #")
+NOISE = ("❯", "⏵⏵", "shift+tab", "esc to interrupt", "? for shortcuts", "Try \"", "auto mode", "PR #", "▝", "▘", "Claude Code v", "/memory to free")
 
 
 def agent_now(herdr, name, frame):

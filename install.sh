@@ -65,6 +65,9 @@ fi
 "$STUDIO_HOME/macos/make-app.sh" codex
 "$STUDIO_HOME/macos/pin-dock.sh"
 
+# 6. The board as a web page, for phones and laptops on the owner's Tailscale network.
+"$STUDIO_HOME/bin/studio" web start || warn "Web view didn't start; run: studio web"
+
 echo
 "$STUDIO_HOME/bin/studio" doctor || true
 cat <<EOF

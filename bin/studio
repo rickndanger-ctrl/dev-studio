@@ -30,6 +30,7 @@ ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
   studio board            the live board (what the first tab shows)
   studio send FROM TO "note"   send a peer message through the router (TO = @name or auto)
   studio ask "note"       dry run: show what the router would decide
+  studio web              the board as a web page for your phone or laptop (kept up by launchd)
   studio doctor           check that everything is installed
   studio stop             stop the studio and every agent in it
 EOF
@@ -455,6 +456,43 @@ cmd_board() {
     --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" ${STUDIO_BOARD_ONCE:+--once}
 }
 
+# The board as a web page, kept up by launchd (KeepAlive) on this Mac.
+#   studio web            start (or restart) the web view under launchd
+#   studio web serve      run it in the foreground (what launchd runs)
+#   studio web stop
+WEB_LABEL=dev.studio.web
+cmd_web() {
+  local dir=${LAST_PROJECT:-$STUDIO_WORKSPACE} plist="$HOME/Library/LaunchAgents/$WEB_LABEL.plist"
+  case ${1:-start} in
+    serve)
+      set_project "$dir"; pick_models; load_team
+      exec "$PYTHON" "$STUDIO_HOME/ui/web.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$AGENT_KIND" \
+        --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" --port "$WEB_PORT" \
+        --name "$STUDIO_NAME" ${PEER_URL:+--peer "$PEER_URL" --peer-name "$PEER_NAME"} ;;
+    stop)
+      launchctl bootout "gui/$(id -u)/$WEB_LABEL" >/dev/null 2>&1; ok "Web view stopped." ;;
+    start)
+      mkdir -p "$(dirname "$plist")" "$STUDIO_DATA/logs"
+      cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$WEB_LABEL</string>
+  <key>ProgramArguments</key><array><string>$STUDIO_HOME/bin/studio</string><string>web</string><string>serve</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$STUDIO_DATA/logs/web.log</string>
+  <key>StandardErrorPath</key><string>$STUDIO_DATA/logs/web.log</string>
+</dict></plist>
+PLIST
+      launchctl bootout "gui/$(id -u)/$WEB_LABEL" >/dev/null 2>&1 || true
+      launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$WEB_LABEL"
+      ok "Web view: http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):$WEB_PORT (and on Tailscale)" ;;
+    *) die "Usage: studio web [start|stop|serve]" ;;
+  esac
+}
+
 # The router runs under this restart loop, in its own pane, so a crash is
 # visible and never silent.
 cmd_router() {
@@ -555,6 +593,7 @@ case ${1:-help} in
   up)     shift; cmd_up "$@" ;;
   board|dash) shift; cmd_board "$@" ;;
   router) shift; cmd_router "$@" ;;
+  web)    shift; cmd_web "$@" ;;
   send)   shift; cmd_send "$@" ;;
   ask)    shift; cmd_ask "$@" ;;
   doctor) cmd_doctor ;;
