@@ -56,7 +56,7 @@ start_server_launchd() {
   <key>ProgramArguments</key><array>
     <string>$herdr_bin</string><string>--session</string><string>$STUDIO_SESSION</string><string>server</string>
   </array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>HOME</key><string>$HOME</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$STUDIO_DATA/logs/herdr-server.log</string>
@@ -479,7 +479,7 @@ cmd_web() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$WEB_LABEL</string>
   <key>ProgramArguments</key><array><string>$STUDIO_HOME/bin/studio</string><string>web</string><string>serve</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>HOME</key><string>$HOME</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$STUDIO_DATA/logs/web.log</string>
