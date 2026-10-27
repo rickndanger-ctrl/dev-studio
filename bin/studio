@@ -216,6 +216,8 @@ fit_workers() {
 layout() {
   local ws team col router pane next n=1 left TOKEN board
   issue_token "$PROJECT_SLUG-architect"
+  # The workspace's --env reaches its root pane only (probed on herdr 0.9.5: a later
+  # tab and a split both saw it unset), so this token stays in the architect's pane.
   # shellcheck disable=SC2046
   set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
   ws=$1; team=$2
