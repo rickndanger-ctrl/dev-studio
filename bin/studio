@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Dev Studio: one click opens a ready-made team of Claude Code sessions in Herdr.
+#   studio up [project]   open (or reopen) the team for a project
+#   studio dash           live team dashboard (runs inside the studio)
+#   studio doctor         check everything is installed
+#   studio stop           stop Herdr and every agent in it
+set -u
+
+SELF=$0
+while [ -L "$SELF" ]; do
+  link=$(readlink "$SELF")
+  case $link in /*) SELF=$link ;; *) SELF=$(dirname "$SELF")/$link ;; esac
+done
+STUDIO_HOME=$(cd "$(dirname "$SELF")/.." && pwd)
+export STUDIO_HOME
+# shellcheck source=../lib/common.sh
+. "$STUDIO_HOME/lib/common.sh"
+
+usage() {
+  cat <<EOF
+${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
+
+  studio up [project]     open the team for a project (folder name or path)
+  studio up --no-attach   build the team without opening a window
+  studio dash             live team dashboard
+  studio doctor           check that everything is installed
+  studio role hq|workshop switch this machine's role
+  studio stop             stop Herdr and every agent in it
+EOF
+}
+
+# --- Herdr helpers -----------------------------------------------------------
+
+ensure_server() {
+  "$HERDR" workspace list >/dev/null 2>&1 && return 0
+  say "Waking up Herdr…"
+  mkdir -p "$STUDIO_DATA/logs"
+  nohup "$HERDR" server >>"$STUDIO_DATA/logs/herdr-server.log" 2>&1 &
+  local i=0
+  while [ $i -lt 40 ]; do
+    "$HERDR" workspace list >/dev/null 2>&1 && return 0
+    sleep 0.25; i=$((i + 1))
+  done
+  die "Herdr didn't start. Log: $STUDIO_DATA/logs/herdr-server.log"
+}
+
+# Print the id of the workspace with this label, if it exists.
+find_workspace() {
+  "$HERDR" workspace list 2>/dev/null | jq -r --arg l "$1" '
+    [.. | objects | select(.label? == $l or .name? == $l) | (.workspace_id // .id // empty)] | first // empty' 2>/dev/null
+}
+
+new_workspace() { # label cwd -> root pane id
+  "$HERDR" workspace create --cwd "$2" --label "$1" --no-focus | jq -r '.result.root_pane.pane_id'
+}
+
+split() { # pane direction ratio cwd -> new pane id
+  "$HERDR" pane split "$1" --direction "$2" --ratio "$3" --cwd "$4" --no-focus | jq -r '.result.pane.pane_id'
+}
+
+# --- Agents --------------------------------------------------------------------
+
+# Write this agent's role brief with the real project name filled in.
+role_file() { # role agent-name -> path
+  local out="$STUDIO_DATA/run/$2.md"
+  mkdir -p "$STUDIO_DATA/run"
+  sed "s/<project>/$PROJECT_SLUG/g" "$STUDIO_HOME/roles/$1.md" > "$out"
+  [ -f "$STUDIO_HOME/LESSONS.md" ] && { printf '\n\n'; cat "$STUDIO_HOME/LESSONS.md"; } >> "$out"
+  printf '%s' "$out"
+}
+
+# start_agent pane label role name model [worktree] [router]
+start_agent() {
+  local pane=$1 label=$2 role=$3 name=$4 model=$5 worktree=${6:-} router=${7:-}
+  local exe=claude cmd
+  if [ -n "$router" ] && [ -n "${ROUTER_CMD:-}" ] && command -v "$ROUTER_CMD" >/dev/null 2>&1; then
+    exe=$ROUTER_CMD   # the router picks the model each turn
+    model=''
+  fi
+  cmd="$exe --name $name"
+  [ -n "$model" ] && cmd="$cmd --model $model"
+  [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
+  cmd="$cmd --settings $(printf %q "$STUDIO_HOME/settings/peer.json")"
+  cmd="$cmd --append-system-prompt-file $(printf %q "$(role_file "$role" "$name")")"
+  "$HERDR" pane rename "$pane" "$label" >/dev/null 2>&1 || true
+  "$HERDR" pane run "$pane" "$cmd" >/dev/null
+}
+
+start_dash() {
+  "$HERDR" pane rename "$1" "✨ studio" >/dev/null 2>&1 || true
+  "$HERDR" pane run "$1" "$(printf %q "$STUDIO_HOME/bin/studio") dash" >/dev/null
+}
+
+# --- Layouts ---------------------------------------------------------------------
+
+#  ┌──────────────┬──────────┐
+#  │              │ ✨ studio │
+#  │ 🏛 architect  ├──────────┤
+#  │              │ 📣 runner │
+#  └──────────────┴──────────┘
+layout_hq() {
+  local root right bottom
+  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
+  right=$(split "$root" right 0.4 "$PROJECT_DIR")
+  bottom=$(split "$right" down 0.5 "$PROJECT_DIR")
+  start_agent "$root" "🏛 architect · $ARCHITECT_MODEL" architect "$PROJECT_SLUG-architect" "$ARCHITECT_MODEL"
+  start_dash "$right"
+  start_agent "$bottom" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-messenger" "$MESSENGER_MODEL"
+}
+
+#  ┌──────────┬──────────┬──────────┐
+#  │ 🔨 b-1   │ 🔨 b-2   │ 🔨 b-3   │
+#  ├──────────┴────┬─────┴──────────┤
+#  │ 📣 messenger  │ ✨ studio       │
+#  └───────────────┴────────────────┘
+layout_workshop() {
+  local root bottom dash pane next n=1 left
+  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
+  bottom=$(split "$root" down 0.3 "$PROJECT_DIR")
+  dash=$(split "$bottom" right 0.5 "$PROJECT_DIR")
+  pane=$root
+  while [ $n -le "$BUILDERS" ]; do
+    left=$((BUILDERS - n))
+    if [ $left -gt 0 ]; then
+      # Give the remaining builders an equal share of what's left of the row.
+      next=$(split "$pane" right "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR")
+    fi
+    start_agent "$pane" "🔨 builder-$n" builder "$PROJECT_SLUG-builder-$n" "$BUILDER_MODEL" "builder-$n" router
+    [ $left -gt 0 ] && pane=$next
+    n=$((n + 1))
+  done
+  start_agent "$bottom" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-shop-messenger" "$MESSENGER_MODEL"
+  start_dash "$dash"
+}
+
+# --- Picking a project -------------------------------------------------------------
+
+list_projects() {
+  [ -d "$PROJECTS_DIR" ] || return 0
+  find "$PROJECTS_DIR" -mindepth 2 -maxdepth 2 -name .git 2>/dev/null \
+    | sed 's#/\.git$##' | xargs -I{} basename {} | sort -f
+}
+
+pick_project() {
+  local choice='' projects default
+  projects=$(list_projects)
+  default=${LAST_PROJECT:+$(basename "$LAST_PROJECT")}
+  if [ "${STUDIO_GUI:-0}" = 1 ] && is_macos; then
+    [ -n "$projects" ] || die "No git projects found in $PROJECTS_DIR"
+    choice=$(osascript - "$projects" "$default" <<'OSA' 2>/dev/null
+on run argv
+  set AppleScript's text item delimiters to linefeed
+  set items_ to text items of (item 1 of argv)
+  set def to item 2 of argv
+  if def is "" or items_ does not contain def then set def to item 1 of items_
+  set r to choose from list items_ with title "Dev Studio" with prompt "🎬 Which project is the team working on today?" default items {def} OK button name "Let's go"
+  if r is false then return ""
+  return item 1 of r
+end run
+OSA
+)
+    [ -n "$choice" ] || exit 0   # cancelled
+  elif [ ! -t 0 ] || [ -z "$projects" ]; then
+    choice=$default
+  else
+    printf '%s\n' "${C_PINK}${C_BOLD}Which project?${C_RESET}"
+    printf '%s\n' "$projects" | awk '{printf "  %2d) %s\n", NR, $0}'
+    printf 'Number or name%s: ' "${default:+ [$default]}"
+    read -r choice
+    [ -z "$choice" ] && choice=$default
+    case $choice in
+      ''|*[!0-9]*) ;;
+      *) choice=$(printf '%s\n' "$projects" | sed -n "${choice}p") ;;
+    esac
+  fi
+  [ -n "$choice" ] || die "No project chosen."
+  printf '%s' "$choice"
+}
+
+resolve_project() {
+  case $1 in
+    /*|./*|../*|~*) (cd "$1" 2>/dev/null && pwd) ;;
+    *) [ -d "$PROJECTS_DIR/$1" ] && (cd "$PROJECTS_DIR/$1" && pwd) ;;
+  esac
+}
+
+# --- Opening the window ------------------------------------------------------------
+
+open_window() {
+  local herdr_path
+  herdr_path=$(command -v "$HERDR")
+  if [ "${STUDIO_GUI:-0}" != 1 ] || ! is_macos; then
+    exec "$HERDR"
+  fi
+  case ${TERMINAL_APP:-auto} in
+    auto)
+      if [ -d /Applications/Ghostty.app ]; then TERMINAL_APP=ghostty
+      elif [ -d /Applications/iTerm.app ]; then TERMINAL_APP=iterm
+      else TERMINAL_APP=terminal; fi ;;
+  esac
+  case $TERMINAL_APP in
+    ghostty) open -na Ghostty.app --args -e "$herdr_path" ;;
+    iterm)   osascript -e "tell application \"iTerm\" to create window with default profile command \"$herdr_path\"" -e 'tell application "iTerm" to activate' ;;
+    *)       osascript -e "tell application \"Terminal\" to do script \"exec '$herdr_path'\"" -e 'tell application "Terminal" to activate' ;;
+  esac
+}
+
+# --- Commands -------------------------------------------------------------------------
+
+cmd_up() {
+  local attach=1 arg=''
+  for a in "$@"; do
+    case $a in --no-attach) attach=0 ;; *) arg=$a ;; esac
+  done
+  command -v "$HERDR" >/dev/null 2>&1 || die "Herdr isn't installed. Run: brew install herdr"
+  command -v jq >/dev/null 2>&1 || die "jq isn't installed. Run: brew install jq"
+
+  if [ -z "$arg" ]; then
+    arg=$(pick_project) || exit 1
+    [ -n "$arg" ] || exit 0   # picker cancelled
+  fi
+  PROJECT_DIR=$(resolve_project "$arg")
+  [ -n "$PROJECT_DIR" ] || die "Can't find project '$arg' (looked in $PROJECTS_DIR)"
+  PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
+  WS_LABEL="$PROJECT_SLUG-$STUDIO_ROLE"
+  set_config LAST_PROJECT "$PROJECT_DIR"
+
+  ensure_server
+  local ws
+  ws=$(find_workspace "$WS_LABEL")
+  if [ -n "$ws" ]; then
+    ok "The $PROJECT_SLUG team is already at work. Opening it…"
+  else
+    say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team on ${C_BOLD}$STUDIO_ROLE${C_RESET}…"
+    case $STUDIO_ROLE in
+      hq) layout_hq ;;
+      workshop) layout_workshop ;;
+      *) die "Unknown role '$STUDIO_ROLE'. Run: studio role hq|workshop" ;;
+    esac
+    ws=$(find_workspace "$WS_LABEL")
+    ok "Team assembled."
+    play_sound Glass
+  fi
+  [ -n "$ws" ] && "$HERDR" workspace focus "$ws" >/dev/null 2>&1
+  [ $attach = 1 ] && open_window
+  return 0
+}
+
+cmd_role() {
+  case ${1:-} in
+    hq|workshop) set_config STUDIO_ROLE "$1"; ok "This machine is now ${C_BOLD}$1${C_RESET}." ;;
+    *) die "Usage: studio role hq|workshop" ;;
+  esac
+}
+
+version_at_least() { # have want
+  awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }
+    exit 0 }'
+}
+
+cmd_doctor() {
+  local bad=0 v
+  check() { # label command hint
+    if command -v "$2" >/dev/null 2>&1; then ok "$1"; else warn "$1 missing. $3"; bad=1; fi
+  }
+  printf '%s\n' "${C_PINK}${C_BOLD}Dev Studio checkup${C_RESET}  (role: $STUDIO_ROLE)"
+  check "Herdr"       "$HERDR" "brew install herdr"
+  check "Claude Code" claude   "https://code.claude.com/docs/en/setup"
+  check "jq"          jq       "brew install jq"
+  check "git"         git      "xcode-select --install"
+  if [ -n "${ROUTER_CMD:-}" ]; then
+    if command -v "$ROUTER_CMD" >/dev/null 2>&1; then ok "Router ($ROUTER_CMD): builders pick their model each turn"
+    else warn "Router ($ROUTER_CMD) not found: builders will use $BUILDER_MODEL. Optional: npm install -g jev-router"; fi
+  fi
+  if command -v claude >/dev/null 2>&1; then
+    v=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$v" ] && version_at_least "$v" 2.1.224; then
+      ok "Claude Code $v supports cross-session messaging"
+    else
+      warn "Claude Code ${v:-?} is too old for cross-session messaging. Run: claude update"; bad=1
+    fi
+  fi
+  if [ -d "$PROJECTS_DIR" ]; then ok "Projects folder: $PROJECTS_DIR ($(list_projects | wc -l | tr -d ' ') projects)"
+  else warn "Projects folder $PROJECTS_DIR doesn't exist. Set PROJECTS_DIR in $STUDIO_CONF"; bad=1; fi
+  [ $bad = 0 ] && ok "${C_BOLD}All good. Click the Studio icon in your Dock.${C_RESET}"
+  return $bad
+}
+
+cmd_stop() {
+  printf 'Stop Herdr and every agent in it? [y/N] '
+  read -r a
+  case $a in y|Y|yes) "$HERDR" server stop && ok "Studio stopped." ;; *) say "Left running." ;; esac
+}
+
+load_config
+case ${1:-help} in
+  up)     shift; cmd_up "$@" ;;
+  dash)   shift; exec "$STUDIO_HOME/ui/dashboard.sh" "$@" ;;
+  doctor) cmd_doctor ;;
+  role)   shift; cmd_role "$@" ;;
+  stop)   cmd_stop ;;
+  help|-h|--help) usage ;;
+  *)      usage; exit 2 ;;
+esac

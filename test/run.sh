@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# End-to-end test of `studio up` and `studio dash` against the mock Herdr.
+# Usage: test/run.sh
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+T=$(mktemp -d)
+trap 'rm -rf -- "$T"' EXIT
+
+export HOME=$T/home MOCK_STATE=$T/state MOCK_LOG=$T/log HERDR=$ROOT/test/mock-herdr
+export STUDIO_DATA=$HOME/.dev-studio STUDIO_CONF=$HOME/.dev-studio/studio.conf
+mkdir -p "$HOME/Developer/OMAC" "$STUDIO_DATA"
+git -C "$HOME/Developer/OMAC" init -q
+pass=0; fail=0
+check() { # description, then a command that must succeed
+  local d=$1; shift
+  if "$@" >/dev/null 2>&1; then pass=$((pass + 1)); echo "  ok   $d"
+  else fail=$((fail + 1)); echo "  FAIL $d"; fi
+}
+has() { grep -qF -- "$1" "$MOCK_LOG"; }
+creates() { grep -c '^workspace create' "$MOCK_LOG"; }
+
+echo "HQ layout"
+echo "STUDIO_ROLE=hq" > "$STUDIO_CONF"
+"$ROOT/bin/studio" up OMAC --no-attach
+check "workspace labelled omac-hq"           has "--label omac-hq"
+check "architect runs opus"                  has "claude --name omac-architect --model opus"
+check "messenger runs haiku"                 has "claude --name omac-messenger --model haiku"
+check "dashboard pane started"               has "bin/studio dash"
+check "peer settings passed"                 has "settings/peer.json"
+check "role brief has project name"          grep -q "omac-builder-1" "$STUDIO_DATA/run/omac-architect.md"
+check "lessons appended to brief"            grep -q "Lessons" "$STUDIO_DATA/run/omac-architect.md"
+check "last project remembered"              grep -q "LAST_PROJECT=.*OMAC" "$STUDIO_CONF"
+check "workspace focused"                    has "workspace focus w1"
+
+echo "Second click reuses the running team"
+"$ROOT/bin/studio" up OMAC --no-attach
+check "no second workspace created"          test "$(creates)" = 1
+
+echo "Workshop layout, 3 builders, no router installed"
+"$ROOT/bin/studio" role workshop
+echo "BUILDERS=3" >> "$STUDIO_CONF"
+"$ROOT/bin/studio" up OMAC --no-attach
+check "workspace labelled omac-workshop"     has "--label omac-workshop"
+check "builder-3 exists"                     has "claude --name omac-builder-3 --model sonnet --worktree builder-3"
+check "builders in separate worktrees"       has "--worktree builder-1"
+check "workshop messenger has unique name"   has "--name omac-shop-messenger"
+check "pane splits: 2 + (3-1) = 4"           test "$(grep -c '^pane split w2:' "$MOCK_LOG")" = 4
+
+echo "Router installed: builders let it pick the model"
+mkdir -p "$T/bin"; printf '#!/bin/sh\n' > "$T/bin/jev-claude"; chmod +x "$T/bin/jev-claude"
+: > "$MOCK_STATE"
+PATH=$T/bin:$PATH "$ROOT/bin/studio" up OMAC --no-attach
+check "builder launched through jev-claude"  has "jev-claude --name omac-builder-1 --worktree builder-1"
+
+echo "Dashboard renders"
+out=$(STUDIO_DASH_ONCE=1 "$ROOT/bin/studio" dash 2>&1)
+check "shows the team"     grep -q "omac-architect" <<<"$out"
+check "flags blocked agent" grep -q "NEEDS YOU" <<<"$out"
+check "shows project"      grep -q "OMAC" <<<"$out"
+
+echo; echo "$pass passed, $fail failed"
+[ "$fail" = 0 ]

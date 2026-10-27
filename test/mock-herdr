@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stand-in for the herdr CLI, following the JSON shapes in herdr.dev/docs/agent-automation.
+# Logs every call to $MOCK_LOG so tests can check what the studio asked Herdr to do.
+set -u
+: "${MOCK_STATE:?}" "${MOCK_LOG:?}"
+printf '%s\n' "$*" >> "$MOCK_LOG"
+touch "$MOCK_STATE"
+count() { grep -c "^$1 " "$MOCK_STATE" 2>/dev/null || true; }
+
+case "$1 ${2:-}" in
+  "workspace list")
+    jq -n --rawfile s "$MOCK_STATE" '{result: {workspaces: [$s | split("\n")[] | select(startswith("ws ")) | split(" ") | {workspace_id: .[1], label: .[2]}]}}' ;;
+  "workspace create")
+    n=$(( $(count ws) + 1 )); label=''
+    while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
+    echo "ws w$n $label" >> "$MOCK_STATE"; echo "pane w$n:p1" >> "$MOCK_STATE"
+    jq -n --arg w "w$n" --arg l "$label" '{result: {workspace: {workspace_id: $w, label: $l}, tab: {}, root_pane: {pane_id: ($w + ":p1")}}}' ;;
+  "pane split")
+    ws=${3%%:*}; n=$(( $(grep -c "^pane $ws:" "$MOCK_STATE") + 1 ))
+    echo "pane $ws:p$n" >> "$MOCK_STATE"
+    jq -n --arg p "$ws:p$n" '{result: {pane: {pane_id: $p}}}' ;;
+  "agent list")
+    echo '{"result":{"agents":[{"name":"omac-architect","pane_id":"w1:p1","status":"working"},{"name":"omac-messenger","pane_id":"w1:p3","status":"blocked"},{"name":"omac-builder-1","pane_id":"w2:p1","status":"done"}]}}' ;;
+  *) echo '{"result":{}}' ;;
+esac

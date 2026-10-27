@@ -1,0 +1,4 @@
+source-path=SCRIPTDIR
+external-sources=true
+# Config variables are set in lib/common.sh and read in other files.
+disable=SC2034,SC2153

@@ -1,0 +1,4 @@
+{
+  "crossSessionInbound": "accept",
+  "isolatePeerMachines": true
+}
