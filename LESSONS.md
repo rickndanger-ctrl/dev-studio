@@ -90,3 +90,14 @@ frame, and those two lines scrolled the pane each second.
 **Rule:** a full-screen TUI owns its terminal: silence warnings and send stderr to a file, and
 test it with `python3 -W error`. When a screen misbehaves, capture the raw bytes on a pty of the
 same size before theorising about the emulator.
+
+## 2026-10-27 — The studio died every time the Dock started Herdr, and a restart lost the agents' names
+**What happened:** `studio up` started the Herdr server with `nohup … &` from inside the Dock
+app's launcher; when the launcher exited a second later macOS reaped its children and the
+server with them (the log showed a clean shutdown two seconds after start). Separately, a Herdr
+restart restores the space and resumes Claude sessions, but not the names the studio gave them,
+so the router could no longer address anyone and the board showed nothing.
+
+**Rule:** anything that must outlive its launcher runs under launchd with KeepAlive, never as a
+background child. After a restore, treat a space whose team is not live (architect not a named
+agent) as dead and rebuild it. Test both with a real `kill -9`.

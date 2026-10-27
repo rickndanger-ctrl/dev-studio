@@ -58,6 +58,23 @@ to the architect, a dump is trimmed, and the note is delivered into the peer's t
 Each message is signed with a secret only its own pane has, so no agent can speak as another;
 anything unsigned is delivered marked **UNVERIFIED**.
 
+## Watch from your laptop or phone
+
+Each Mac serves its board as a web page, kept alive by launchd and reachable only over your
+Tailscale network (your signed-in devices, nothing else):
+
+- Mini 1: `http://100.64.0.1:8790`
+- Mini 2: `http://100.64.0.2:8790`
+
+Each page links to the other in its header. Any browser works — the Dell, an iPhone, an iPad.
+`/health` on the same address returns the agent states as JSON for scripts.
+
+## What keeps it running
+
+The Herdr server and the web page both run under **launchd with KeepAlive**: if either dies,
+macOS restarts it within seconds. If Herdr restarts and brings the space back without its
+agents, the next click on the Dock icon rebuilds the team instead of reopening an empty room.
+
 ## Commands
 
 | Command | What it does |
@@ -65,6 +82,7 @@ anything unsigned is delivered marked **UNVERIFIED**.
 | `studio up [project] [--codex] [--router jev\|clef\|rules]` | open (or reopen) the team |
 | `studio ask "note"` | dry run: what would the router decide for this note? |
 | `studio send FROM @TO "note"` | send a note through the router (agents do this) |
+| `studio web [start\|stop]` | the board as a web page (launchd keeps it up) |
 | `studio doctor` | check everything is installed |
 | `studio stop` | stop the studio's Herdr session and every agent in it |
 

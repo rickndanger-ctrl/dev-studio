@@ -38,6 +38,22 @@ A Dock app that opens a team of coding-agent sessions for a project inside Herdr
 - `test/run.sh` (51 checks) runs the studio against `test/mock-herdr` and a fake TypeSafe
   endpoint (`test/fake-typesafe.py`). CI runs it on macOS bash 3.2.
 
+## Added 2026-10-27 (afternoon)
+- **Live feed on the board**: `agent_now()` reads each agent's last meaningful terminal line
+  (`herdr agent read`), state changes are noted between frames, and the feed merges them with
+  router rows. "talking to" on the architect card is its last route.
+- **launchd supervision** (`dev.studio.herdr`, `dev.studio.web`, KeepAlive). Reason: a server
+  started from the Dock app's launcher died when the launcher exited. `STUDIO_SUPERVISOR=nohup`
+  is for tests only.
+- **Rebuild on a dead space**: `team_is_live` checks the architect is a named agent; a Herdr
+  restart restores panes and even resumes Claude, but names are lost, so the team is rebuilt.
+- **Web view** `ui/web.py`, port 8790, loopback + 100.64.0.0/10 only, Host checked. Mini 1
+  100.64.0.1, Mini 2 100.64.0.2; the owner's Dell is `linux-laptop` on the tailnet (Linux).
+- Both Minis run Herdr 0.9.5. OMAC theme on both: obsidian + emerald glass. The OMAC tile
+  opener falls back to a Terminal window when OMAC refuses ("resume the page").
+- A Python 3.15 DeprecationWarning once scrolled the board; the board silences warnings and
+  sends stderr to `.studio/board.err`. Mini 2 runs Xcode's Python 3.9: keep the code 3.9-safe.
+
 ## Known limits / next ideas
 - One team per project at a time (Claude or Codex): both would share `<project>/.studio`.
 - The board is a terminal pane. The owner asked whether it "has to be Herdr": the plumbing
