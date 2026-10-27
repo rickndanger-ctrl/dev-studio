@@ -322,7 +322,10 @@ def process(s, herdr, path, peers, tokens):
         with open(path, "w") as f:
             json.dump(msg, f)
         return
-    os.rename(path, os.path.join(s.delivered if outcome == "delivered" or not decision["to"] else s.held, os.path.basename(path)))
+    # Archive under a name the router builds from the message itself, so the
+    # replay record cannot be shaped by whoever wrote the outbox file.
+    archive = "%d-%s.json" % (int(float(msg["t"]) * 1000), msg["id"])
+    os.rename(path, os.path.join(s.delivered if outcome == "delivered" or not decision["to"] else s.held, archive))
 
 
 def cmd_daemon(a):
