@@ -12,6 +12,7 @@ export STUDIO_DATA=$HOME/.dev-studio STUDIO_CONF=$HOME/.dev-studio/studio.conf
 mkdir -p "$HOME/Developer/OMAC" "$STUDIO_DATA"
 git -C "$HOME/Developer/OMAC" init -q
 PROJECT=$HOME/Developer/OMAC
+printf '{"projects":{"/elsewhere":{"lastCost":1}}}' > "$HOME/.claude.json"
 pass=0; fail=0
 check() { # description, then a command that must succeed
   local d=$1; shift
@@ -39,6 +40,8 @@ check "team.json records kind and models"    grep -q '"kind": *"claude"' "$PROJE
 check "role brief names the agent"           grep -q "omac-main" "$STUDIO_DATA/run/omac-main.md"
 check "role brief says how to send"          grep -q "studio send omac-worker-1" "$STUDIO_DATA/run/omac-worker-1.md"
 check ".studio kept out of git"              grep -q '^\.studio/$' "$PROJECT/.git/info/exclude"
+# shellcheck disable=SC2016
+check "project marked trusted for claude"    jq -e --arg p "$PROJECT" '.projects[$p].hasTrustDialogAccepted == true and .projects["/elsewhere"].lastCost == 1' "$HOME/.claude.json"
 check "ratio converted (architect keeps 55%)" has "pane split w1:p2 --direction right --ratio 0.55"
 check "each agent pane gets its own token"   sh -c "test \$(grep -c -- '--env STUDIO_TOKEN=' '$MOCK_LOG') = 4"
 check "router pane gets the token map"       grep -q -- '--env STUDIO_TOKENS={"omac-architect"' "$MOCK_LOG"
