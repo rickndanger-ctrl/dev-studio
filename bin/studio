@@ -24,7 +24,7 @@ ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
   studio up --no-attach   build the team without opening a window
   studio dash             live team dashboard
   studio doctor           check that everything is installed
-  studio role hq|workshop switch this machine's role
+  studio role solo|hq|workshop  switch this machine's role
   studio stop             stop Herdr and every agent in it
 EOF
 }
@@ -65,6 +65,9 @@ role_file() { # role agent-name -> path
   local out="$STUDIO_DATA/run/$2.md"
   mkdir -p "$STUDIO_DATA/run"
   sed "s/<project>/$PROJECT_SLUG/g" "$STUDIO_HOME/roles/$1.md" > "$out"
+  if [ "$1" = architect ] && [ "$STUDIO_ROLE" = solo ] && [ "$MESSENGER" != 1 ]; then
+    printf '\n## Solo studio\nThere is no messenger on this team. Keep the status board in .studio/status.md yourself, briefly.\nThe builders run on this same Mac, and memory is tight: give each builder one task at a time.\n' >> "$out"
+  fi
   [ -f "$STUDIO_HOME/LESSONS.md" ] && { printf '\n\n'; cat "$STUDIO_HOME/LESSONS.md"; } >> "$out"
   printf '%s' "$out"
 }
@@ -92,6 +95,52 @@ start_dash() {
 }
 
 # --- Layouts ---------------------------------------------------------------------
+
+# Cap builders so the whole team fits in the memory that's free right now.
+fit_builders() {
+  local avail per=${MB_PER_AGENT:-600} others=1 max
+  [ "$STUDIO_ROLE" = solo ] && [ "$MESSENGER" = 1 ] && others=2
+  [ "$STUDIO_ROLE" = workshop ] && others=1
+  avail=$(mem_available_mb)
+  case $avail in ''|*[!0-9]*) return 0 ;; esac
+  max=$(( (avail - ${MEM_RESERVE_MB:-1536}) / per - others ))
+  [ "$max" -lt 1 ] && max=1
+  if [ "$BUILDERS" -gt "$max" ]; then
+    warn "Only ${avail}MB of memory free, so starting $max builder(s) instead of $BUILDERS."
+    BUILDERS=$max
+  fi
+}
+
+# Lean single-Mac team.
+#  ┌──────────────┬──────────┐
+#  │              │ 🔨 b-1   │
+#  │ 🏛 architect  ├──────────┤
+#  │              │ 🔨 b-2   │
+#  ├──────────────┴──────────┤
+#  │ ✨ studio                │
+#  └─────────────────────────┘
+layout_solo() {
+  local root dash col pane next n=1 left
+  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
+  dash=$(split "$root" down 0.25 "$PROJECT_DIR")
+  col=$(split "$root" right 0.5 "$PROJECT_DIR")
+  start_agent "$root" "🏛 architect · $ARCHITECT_MODEL" architect "$PROJECT_SLUG-architect" "$ARCHITECT_MODEL"
+  pane=$col
+  while [ $n -le "$BUILDERS" ]; do
+    left=$((BUILDERS - n))
+    if [ $left -gt 0 ]; then
+      next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR")
+    fi
+    start_agent "$pane" "🔨 builder-$n" builder "$PROJECT_SLUG-builder-$n" "$BUILDER_MODEL" "builder-$n" router
+    [ $left -gt 0 ] && pane=$next
+    n=$((n + 1))
+  done
+  if [ "$MESSENGER" = 1 ]; then
+    next=$(split "$dash" right 0.5 "$PROJECT_DIR")
+    start_agent "$next" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-messenger" "$MESSENGER_MODEL"
+  fi
+  start_dash "$dash"
+}
 
 #  ┌──────────────┬──────────┐
 #  │              │ ✨ studio │
@@ -232,10 +281,12 @@ cmd_up() {
     ok "The $PROJECT_SLUG team is already at work. Opening it…"
   else
     say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team on ${C_BOLD}$STUDIO_ROLE${C_RESET}…"
+    fit_builders
     case $STUDIO_ROLE in
+      solo) layout_solo ;;
       hq) layout_hq ;;
       workshop) layout_workshop ;;
-      *) die "Unknown role '$STUDIO_ROLE'. Run: studio role hq|workshop" ;;
+      *) die "Unknown role '$STUDIO_ROLE'. Run: studio role solo|hq|workshop" ;;
     esac
     ws=$(find_workspace "$WS_LABEL")
     ok "Team assembled."
@@ -248,8 +299,8 @@ cmd_up() {
 
 cmd_role() {
   case ${1:-} in
-    hq|workshop) set_config STUDIO_ROLE "$1"; ok "This machine is now ${C_BOLD}$1${C_RESET}." ;;
-    *) die "Usage: studio role hq|workshop" ;;
+    solo|hq|workshop) set_config STUDIO_ROLE "$1"; ok "This machine is now ${C_BOLD}$1${C_RESET}." ;;
+    *) die "Usage: studio role solo|hq|workshop" ;;
   esac
 }
 
@@ -281,6 +332,8 @@ cmd_doctor() {
       warn "Claude Code ${v:-?} is too old for cross-session messaging. Run: claude update"; bad=1
     fi
   fi
+  v=$(mem_available_mb)
+  ok "Memory free: ${v}MB, room for about $(( v > MEM_RESERVE_MB ? (v - MEM_RESERVE_MB) / MB_PER_AGENT : 0 )) Claude sessions"
   if [ -d "$PROJECTS_DIR" ]; then ok "Projects folder: $PROJECTS_DIR ($(list_projects | wc -l | tr -d ' ') projects)"
   else warn "Projects folder $PROJECTS_DIR doesn't exist. Set PROJECTS_DIR in $STUDIO_CONF"; bad=1; fi
   [ $bad = 0 ] && ok "${C_BOLD}All good. Click the Studio icon in your Dock.${C_RESET}"

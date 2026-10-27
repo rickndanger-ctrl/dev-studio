@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Dev Studio installer. Run once on each Mac:
-#   ./install.sh hq         on Mini One (the architect's office)
-#   ./install.sh workshop   on Mini Two (the builders' workshop)
+#   ./install.sh            a complete, lean team on this Mac (solo, the default)
+#   ./install.sh hq         two-Mac setup: the architect's office
+#   ./install.sh workshop   two-Mac setup: the builders' workshop
 set -eu
 STUDIO_HOME=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib/common.sh
@@ -23,11 +24,8 @@ ${C_DIM}  your AI dev team, one click away${C_RESET}
 EOF
 
 # 1. Which machine is this?
-role=${1:-}
-if [ -z "$role" ]; then
-  role=$(ask "Is this Mac the HQ (architect) or the workshop (builders)? hq/workshop" hq)
-fi
-case $role in hq|workshop) ;; *) die "Please answer hq or workshop." ;; esac
+role=${1:-solo}
+case $role in solo|hq|workshop) ;; *) die "Role must be solo, hq or workshop." ;; esac
 
 # 2. Tools.
 command -v brew >/dev/null 2>&1 || die "Homebrew is needed first. Install it from https://brew.sh then run this again."
@@ -47,8 +45,8 @@ projects=$(ask "Where do your project folders live?" "$projects")
 case $projects in "~"*) projects="$HOME${projects#\~}" ;; esac
 set_config STUDIO_ROLE "$role"
 set_config PROJECTS_DIR "$projects"
-if [ "$role" = workshop ]; then
-  set_config BUILDERS "$(ask "How many builders should the workshop run?" "$BUILDERS")"
+if [ "$role" != hq ]; then
+  set_config BUILDERS "$(ask "How many builders? (fewer = less memory)" "$BUILDERS")"
 fi
 ok "Settings saved to $STUDIO_CONF"
 
@@ -84,6 +82,6 @@ echo
 "$STUDIO_HOME/bin/studio" doctor || true
 cat <<EOF
 
-${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}$( [ "$role" = hq ] && echo "Studio HQ" || echo "Studio Workshop" )${C_RESET} in your Dock.
+${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}$(case $role in solo) echo "Dev Studio" ;; hq) echo "Studio HQ" ;; *) echo "Studio Workshop" ;; esac)${C_RESET} in your Dock.
 The first time, macOS will ask to let it control your terminal. Click OK.
 EOF

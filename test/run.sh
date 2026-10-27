@@ -58,5 +58,29 @@ check "shows the team"     grep -q "omac-architect" <<<"$out"
 check "flags blocked agent" grep -q "NEEDS YOU" <<<"$out"
 check "shows project"      grep -q "OMAC" <<<"$out"
 
+echo "Solo layout (default role), plenty of memory"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'PROJECTS_DIR=%s\n' "$HOME/Developer" > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "workspace labelled omac-solo"         has "--label omac-solo"
+check "architect runs opus"                  has "claude --name omac-architect --model opus"
+check "two builders"                         has "--name omac-builder-2"
+check "no messenger by default"              sh -c "! grep -q messenger '$MOCK_LOG'"
+check "architect told to keep status board"  grep -q "Solo studio" "$STUDIO_DATA/run/omac-architect.md"
+
+echo "Solo with little memory free: builders capped"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+echo "BUILDERS=4" >> "$STUDIO_CONF"
+err=$(STUDIO_FAKE_MEM_MB=3000 "$ROOT/bin/studio" up OMAC --no-attach 2>&1 >/dev/null)
+# (3000 - 1536) / 600 - 1 architect = 1 builder
+check "warns about memory"                   grep -q "Only 3000MB" <<<"$err"
+check "only builder-1 started"               sh -c "grep -q omac-builder-1 '$MOCK_LOG' && ! grep -q omac-builder-2 '$MOCK_LOG'"
+
+echo "Solo with messenger turned on"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+echo "MESSENGER=1" >> "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "messenger started"                    has "--name omac-messenger --model haiku"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

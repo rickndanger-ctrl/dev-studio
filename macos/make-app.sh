@@ -8,11 +8,12 @@ STUDIO_HOME=$(cd "$(dirname "$0")/.." && pwd)
 . "$STUDIO_HOME/lib/common.sh"
 is_macos || die "This step only runs on a Mac."
 
-role=${1:?usage: make-app.sh hq|workshop}
+role=${1:?usage: make-app.sh solo|hq|workshop}
 case $role in
+  solo)     name="Dev Studio";      icon="icon-solo" ;;
   hq)       name="Studio HQ";       icon="icon-hq" ;;
   workshop) name="Studio Workshop"; icon="icon-workshop" ;;
-  *) die "role must be hq or workshop" ;;
+  *) die "role must be solo, hq or workshop" ;;
 esac
 app="$HOME/Applications/$name.app"
 bundle_id="dev.studio.$role"

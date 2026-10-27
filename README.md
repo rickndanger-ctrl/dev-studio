@@ -3,12 +3,19 @@
 **Your AI dev team, one click away.** Click an icon in your Dock and a terminal opens with a
 full team of Claude Code sessions already running, named, and able to message each other.
 
-| Mini One · **Studio HQ** | Mini Two · **Studio Workshop** |
-|---|---|
-| ![HQ](assets/icon-hq.png) | ![Workshop](assets/icon-workshop.png) |
-| 🏛 **Architect** (Opus): plans, assigns, approves | 🔨 **Builders** (Sonnet, or routed by Jev): write and test code |
-| 📣 **Messenger** (Haiku): routes notes, keeps the status board | 📣 **Messenger** (Haiku) |
-| ✨ **Studio dashboard** | ✨ **Studio dashboard** |
+![Dev Studio](assets/icon-solo.png)
+
+Each Mac runs its own complete, **lean** team:
+
+| Pane | Model | Job |
+|---|---|---|
+| 🏛 **Architect** | Opus | plans, assigns work, approves before anything merges |
+| 🔨 **Builders** (2 by default) | Sonnet, or routed by Jev | write and test code, each in its own copy of the project |
+| ✨ **Studio dashboard** | none (a tiny script) | who's working, who needs you, memory left |
+
+**Built for Macs with limited memory.** Before starting, the Studio checks how much memory
+is free and starts fewer builders if they wouldn't fit, so the Mac never grinds to a halt.
+The messenger pane is off by default to save memory (`MESSENGER=1` turns it on).
 
 Built on [Herdr](https://herdr.dev), which keeps every agent running in the background,
 restores the layout after a restart, and shows who's working, done, or waiting on you.
@@ -18,16 +25,20 @@ restores the layout after a restart, and shows who's working, done, or waiting o
 ```bash
 git clone https://github.com/rickndanger-ctrl/dev-studio.git ~/dev-studio
 cd ~/dev-studio
-./install.sh hq          # on Mini One
-./install.sh workshop    # on Mini Two
+./install.sh
 ```
 
-The installer installs Herdr and jq (via Homebrew), saves your settings, adds a `studio`
-command, connects the two Minis, and puts the icon in your Dock.
+Run it on each Mini. It installs anything missing (Herdr, jq), saves your settings, adds a
+`studio` command, and puts the **Dev Studio** icon in your Dock.
+
+<details><summary>Two-Mac mode (optional)</summary>
+
+One Mac plans, the other builds: `./install.sh hq` on one and `./install.sh workshop` on the other.
+</details>
 
 ## Every day
 
-1. Click **Studio HQ** (or **Studio Workshop**) in the Dock.
+1. Click **Dev Studio** in the Dock.
 2. Pick a project from the list.
 3. Talk to the architect. It hands work to the builders, and they report back.
 
@@ -47,21 +58,30 @@ Click the icon again later and you're back in the same team, still running.
 |---|---|
 | `studio up [project]` | open the team for a project |
 | `studio doctor` | check everything is installed |
-| `studio role hq\|workshop` | switch this Mac's role |
+| `studio role solo\|hq\|workshop` | switch this Mac's role |
 | `studio stop` | stop every agent |
 
-Settings live in `~/.dev-studio/studio.conf`: builder count, models, router, sounds, terminal app.
+Settings live in `~/.dev-studio/studio.conf`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `BUILDERS` | 2 | builders to start (capped automatically by free memory) |
+| `MESSENGER` | 0 | 1 adds a Haiku messenger pane |
+| `MB_PER_AGENT` | 600 | memory budgeted per Claude session |
+| `MEM_RESERVE_MB` | 1536 | memory always left for macOS and your apps |
+| `ROUTER_CMD` | jev-claude | the router builders launch through, when installed |
+| `SOUNDS` | 1 | pings and chimes |
 
 ## How the safety rules work
 
 - Same-Mac messages are delivered straight away (`crossSessionInbound: accept`).
-- Messages between the two Minis need your approval (`isolatePeerMachines: true`).
+- Messages from another Mac need your approval (`isolatePeerMachines: true`).
 - A message from another agent is never treated as your approval, and each agent still asks
   before risky actions.
 - Each builder works in its own git worktree, so builders never overwrite each other.
 - Only the architect signs off on merges to `main`.
 
-To let the two Minis' Claude sessions message each other, both need the same claude.ai
+In two-Mac mode, for the Macs' Claude sessions to message each other, both need the same claude.ai
 sign-in and [Remote Control](https://code.claude.com/docs/en/cross-session-messaging).
 
 ## Model routing (optional)

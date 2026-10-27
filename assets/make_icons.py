@@ -62,4 +62,8 @@ icon("icon-hq", "HQ", (255, 79, 154), (110, 46, 214), (255, 120, 200),
 icon("icon-workshop", "SHOP", (255, 196, 0), (240, 90, 30), (255, 220, 90),
      [((0, 0, 0.34, 0.66), True), ((0.34, 0, 0.67, 0.66), True), ((0.67, 0, 1, 0.66), True),
       ((0, 0.66, 0.5, 1), False), ((0.5, 0.66, 1, 1), False)])
+# Solo: architect on the left, a column of builders on the right, studio strip below.
+icon("icon-solo", "STUDIO", (0, 214, 201), (37, 99, 235), (120, 255, 230),
+     [((0, 0, 0.55, 0.72), True), ((0.55, 0, 1, 0.36), False), ((0.55, 0.36, 1, 0.72), False),
+      ((0, 0.72, 1, 1), False)])
 print("icons written")

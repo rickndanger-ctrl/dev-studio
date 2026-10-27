@@ -21,6 +21,8 @@ TIPS=(
 
 if [ "$STUDIO_ROLE" = workshop ]; then
   ACCENT=$C_GOLD; TITLE="W O R K S H O P"; MASCOT="🔨"
+elif [ "$STUDIO_ROLE" = solo ]; then
+  ACCENT=$C_CYAN; TITLE="S O L O   S E S S I O N"; MASCOT="🎬"
 else
   ACCENT=$C_PINK; TITLE="H E A D Q U A R T E R S"; MASCOT="🏛"
 fi
@@ -88,7 +90,10 @@ extras() {
     printf '  🧭 router  %soff%s (builders use %s)\n' "$C_DIM" "$C_RESET" "$BUILDER_MODEL"
   fi
   [ "$STUDIO_ROLE" = hq ] && [ -n "${WORKSHOP_MACHINE:-}" ] && printf '  🔗 workshop  %s\n' "$WORKSHOP_MACHINE"
-  printf '  💻 load %s\n' "$(uptime | sed 's/.*load averages*: //')"
+  local mem color=$C_GREEN
+  mem=$(mem_available_mb)
+  [ "${mem:-0}" -lt "${MEM_RESERVE_MB:-1536}" ] && color=$C_RED
+  printf '  🧠 memory  %s%s MB free%s   💻 load %s\n' "$color" "$mem" "$C_RESET" "$(uptime | sed 's/.*load averages*: //')"
 }
 
 trap 'tput cnorm 2>/dev/null; exit 0' INT TERM

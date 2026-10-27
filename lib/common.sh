@@ -26,10 +26,13 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 
 # Defaults, then the user's config on top.
 load_config() {
-  STUDIO_ROLE=hq              # hq | workshop
+  STUDIO_ROLE=solo            # solo | hq | workshop
   PROJECTS_DIR=$HOME/Developer
   LAST_PROJECT=''
-  BUILDERS=2                  # builder panes on the workshop
+  BUILDERS=2                  # builder panes (solo and workshop)
+  MESSENGER=0                 # 1 = add a Haiku messenger pane in solo mode
+  MB_PER_AGENT=600            # memory budget per Claude session, used to cap builders
+  MEM_RESERVE_MB=1536         # memory left free for macOS and your other apps
   ROUTER_CMD=jev-claude       # used by builders when installed; blank to disable
   ARCHITECT_MODEL=opus
   BUILDER_MODEL=sonnet        # used when the router is not installed
@@ -58,6 +61,19 @@ slug() {
   s=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
   case $s in [a-z]*) ;; *) s="p$s" ;; esac
   printf '%s' "$s" | cut -c1-20
+}
+
+# Memory the Mac can hand out right now, in MB (free + reclaimable).
+mem_available_mb() {
+  if [ -n "${STUDIO_FAKE_MEM_MB:-}" ]; then printf '%s' "$STUDIO_FAKE_MEM_MB"; return; fi
+  if is_macos; then
+    vm_stat | awk -v ps="$(sysctl -n hw.pagesize)" '
+      /Pages free/ {f = $3 + 0} /Pages inactive/ {i = $3 + 0}
+      /Pages speculative/ {s = $3 + 0} /Pages purgeable/ {p = $3 + 0}
+      END {printf "%d", (f + i + s + p) * ps / 1048576}'
+  else
+    awk '/MemAvailable/ {printf "%d", $2 / 1024}' /proc/meminfo
+  fi
 }
 
 play_sound() {
