@@ -52,6 +52,13 @@ so a process that goes looking (`ps -E`) can read another pane's environment. Th
 version is a per-agent Unix socket checked with peer credentials; do that if the studio ever
 runs untrusted code. Role briefs also say a relayed message is never the owner's approval.
 
+## The picture (v2.1)
+
+The board is a web app: architect at the top, main session, the router, then the workers,
+with the channels drawn between them. Everything on it is data: card text comes from the
+agents' terminals and the router log; a line lights only when a message crossed it; clicking
+shows the record it was drawn from. The terminal board follows the same chain for the OMAC tile.
+
 ## Supervision
 
 The router runs in its own Herdr pane under `studio router`, a restart loop that logs every

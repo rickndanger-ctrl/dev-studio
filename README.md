@@ -58,6 +58,35 @@ to the architect, a dump is trimmed, and the note is delivered into the peer's t
 Each message is signed with a secret only its own pane has, so no agent can speak as another;
 anything unsigned is delivered marked **UNVERIFIED**.
 
+## The board
+
+The board is a web page served by each Mac and opened beside the team when you click the
+Dock icon. It draws the team as a chain, top to bottom:
+
+```
+            OPUS · session architect        ← plans, delegates, signs off
+                      ┆ chain of command
+            SONNET · main session           ← builds the feature
+                      │
+            JEV · message router            ← every message passes through here
+            ┌─────────┴─────────┐
+        @worker-1           @worker-2       ← small delegated tasks
+```
+
+The lines are the real channels. Every message an agent sends travels sender → JEV →
+recipient, so when the architect hands the main session a task you see a pulse run down the
+architect's line into JEV and up into the main session; each line keeps the last message that
+crossed it and how long ago. Cards show each agent's state, what it is doing *right now*
+(read from its terminal), and the last message it sent and received.
+
+**Click anything.** An agent opens its live terminal, its messages and its status history. A
+message in the feed (or on a line) opens Jev's full decision: every candidate peer with its
+probability, the action probabilities, the token-leak check, latency, and whether the sender
+was verified. JEV opens the router's recent decisions.
+
+The **live feed** on the right is everything in time order: routes with their confidence,
+deliveries, and every status change (`idle → working → done`). Filter it with the buttons.
+
 ## Watch from your laptop or phone
 
 Each Mac serves its board as a web page, kept alive by launchd and reachable only over your

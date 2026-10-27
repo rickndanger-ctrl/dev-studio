@@ -54,6 +54,16 @@ A Dock app that opens a team of coding-agent sessions for a project inside Herdr
 - A Python 3.15 DeprecationWarning once scrolled the board; the board silences warnings and
   sends stderr to `.studio/board.err`. Mini 2 runs Xcode's Python 3.9: keep the code 3.9-safe.
 
+## The board app (2026-10-27, evening)
+- `ui/web.py` serves `ui/web/{index.html,app.css,app.js}` and `/api/state` (+ `/api/agent?name=`).
+  A poller thread refreshes the model every second (agents, "now" lines, router log, events).
+- `app.js` lays the team out in four layers and draws SVG wires agent ↔ JEV (the architect's
+  swings out to the left so it does not cross the main session). Pulses are SMIL
+  `animateMotion` circles on each hop; drawn synchronously, never via rAF (hidden tabs stall it).
+- The Dock opens the board in Chrome app mode (`open_board_window`): start Chrome via
+  LaunchServices first, then hand `--app=URL` to the running instance. `BOARD_WINDOW=none` turns it off.
+- `test/run.sh` starts the web app against the mock on port 8797 and checks the API.
+
 ## Known limits / next ideas
 - One team per project at a time (Claude or Codex): both would share `<project>/.studio`.
 - The board is a terminal pane. The owner asked whether it "has to be Herdr": the plumbing
