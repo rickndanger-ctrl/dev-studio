@@ -260,6 +260,10 @@ prepare_studio_dir() {
 trust_project() {
   local f="$HOME/.claude.json" tmp
   [ "$AGENT_KIND" = claude ] && [ -f "$f" ] || return 0
+  # Only a git project the owner picked, never a home folder or a disk root:
+  # trusting runs that folder's hooks and settings.
+  case $PROJECT_DIR in "$HOME"|/|/Users|/Users/*/) return 0 ;; esac
+  [ -d "$PROJECT_DIR/.git" ] || { warn "$PROJECT_DIR is not a git project, so I won't mark it trusted; Claude may ask you."; return 0; }
   jq -e --arg p "$PROJECT_DIR" '.projects[$p].hasTrustDialogAccepted == true' "$f" >/dev/null 2>&1 && return 0
   tmp=$(mktemp "$HOME/.claude.json.XXXXXX")
   if jq --arg p "$PROJECT_DIR" '.projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true})' "$f" > "$tmp"; then
