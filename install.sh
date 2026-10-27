@@ -61,12 +61,13 @@ if [ -z "${TYPESAFE_API_KEY:-}" ] && ! grep -qs 'TYPESAFE_API_KEY' "$HOME/.zshrc
 fi
 
 # 5. Dock app.
-"$STUDIO_HOME/macos/make-app.sh" solo
+"$STUDIO_HOME/macos/make-app.sh" claude
+"$STUDIO_HOME/macos/make-app.sh" codex
 
 echo
 "$STUDIO_HOME/bin/studio" doctor || true
 cat <<EOF
 
-${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}Dev Studio${C_RESET} in your Dock.
+${C_PINK}${C_BOLD}All set.${C_RESET} Click ${C_BOLD}Dev Studio Claude${C_RESET} (or Codex) in your Dock.
 The first time, macOS will ask to let it control your terminal. Click OK.
 EOF

@@ -24,8 +24,9 @@ usage() {
   cat <<EOF
 ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
 
-  studio up [project] [--codex|--claude] [--router jev|clef|rules] [--no-attach]
-                          open (or reopen) the team for a project
+  studio up [--codex|--claude] [--router jev|clef|rules] [--no-attach]
+                          open (or reopen) the team in the studio's home (~/DevStudio)
+  studio up <project>     the team on a specific project folder; --pick shows a chooser
   studio board            the live board (what the first tab shows)
   studio send FROM TO "note"   send a peer message through the router (TO = @name or auto)
   studio ask "note"       dry run: show what the router would decide
@@ -310,20 +311,38 @@ pick_models() {
   fi
 }
 
+# The studio's own home: a plain git folder the team works from. Projects get
+# cloned or opened from inside it by the architect, so nobody has to pick files.
+ensure_studio_home() {
+  if [ ! -d "$STUDIO_WORKSPACE/.git" ]; then
+    mkdir -p "$STUDIO_WORKSPACE"
+    [ -f "$STUDIO_WORKSPACE/README.md" ] || printf '# Dev Studio\n\nThe team works from here. Ask the architect to clone or open a project.\n' > "$STUDIO_WORKSPACE/README.md"
+    git -C "$STUDIO_WORKSPACE" init -q 2>/dev/null || true
+  fi
+}
+
+kind_title() { case $AGENT_KIND in codex) printf 'Codex' ;; *) printf 'Claude' ;; esac; }
+
 set_project() { # project-arg
   PROJECT_DIR=$(resolve_project "$1")
   [ -n "$PROJECT_DIR" ] || die "Can't find project '$1' (looked in $PROJECTS_DIR)"
-  PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
   STUDIO_DIR=$PROJECT_DIR/.studio
-  WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
+  if [ "$PROJECT_DIR" = "$STUDIO_WORKSPACE" ]; then
+    PROJECT_SLUG=studio
+    WS_LABEL="Dev Studio · $(kind_title)"
+  else
+    PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
+    WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
+  fi
 }
 
 cmd_up() {
-  local attach=1 arg='' expect=''
+  local attach=1 arg='' expect='' pick=0
   for a in "$@"; do
     if [ -n "$expect" ]; then ROUTER=$a; expect=''; continue; fi
     case $a in
       --no-attach) attach=0 ;;
+      --pick)   pick=1 ;;
       --codex)  AGENT_KIND=codex ;;
       --claude) AGENT_KIND=claude ;;
       --router) expect=router ;;
@@ -337,9 +356,12 @@ cmd_up() {
   command -v jq >/dev/null 2>&1 || die "jq isn't installed. Run: brew install jq"
   command -v "$AGENT_KIND" >/dev/null 2>&1 || die "$AGENT_KIND isn't installed."
 
-  if [ -z "$arg" ]; then
+  if [ -z "$arg" ] && [ $pick = 1 ]; then
     arg=$(pick_project) || exit 1
     [ -n "$arg" ] || exit 0   # picker cancelled
+  elif [ -z "$arg" ]; then
+    ensure_studio_home
+    arg=$STUDIO_WORKSPACE
   fi
   set_project "$arg"
   pick_models

@@ -56,6 +56,18 @@ check "router pane gets the token map"       grep -q -- '--env STUDIO_TOKENS={"o
 check "last project remembered"              grep -q "LAST_PROJECT=.*OMAC" "$STUDIO_CONF"
 check "workspace focused"                    has "workspace focus w1"
 
+echo "No project given: the studio's own home"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up --no-attach
+check "home folder created as a git repo"    test -d "$HOME/DevStudio/.git"
+check "space labelled Dev Studio · Claude"   has "--label Dev Studio · Claude"
+check "agents named studio-*"                has "claude --name studio-architect --model opus"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up --no-attach --codex
+check "codex space labelled Dev Studio · Codex" has "--label Dev Studio · Codex"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"   # the codex run remembered AGENT_KIND; back to claude
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+
 echo "Second click reuses the running team"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
 check "no second workspace created"          test "$(creates)" = 1

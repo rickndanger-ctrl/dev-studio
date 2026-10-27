@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
-# Builds "Studio HQ.app" or "Studio Workshop.app" in ~/Applications and pins it to the Dock.
-# The app is a tiny bundle whose only job is to run `studio up` in GUI mode.
-# Usage: macos/make-app.sh hq|workshop
+# Builds "Dev Studio Claude.app" / "Dev Studio Codex.app" in ~/Applications and pins it to the Dock.
+# The app is a tiny bundle whose only job is to run `studio up --<kind>` in GUI mode.
+# Usage: macos/make-app.sh claude|codex
 set -eu
 STUDIO_HOME=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck source=../lib/common.sh
 . "$STUDIO_HOME/lib/common.sh"
 is_macos || die "This step only runs on a Mac."
 
-role=${1:?usage: make-app.sh solo|hq|workshop}
-case $role in
-  solo)     name="Dev Studio";      icon="icon-solo" ;;
-  hq)       name="Studio HQ";       icon="icon-hq" ;;
-  workshop) name="Studio Workshop"; icon="icon-workshop" ;;
-  *) die "role must be solo, hq or workshop" ;;
+kind=${1:?usage: make-app.sh claude|codex}
+case $kind in
+  claude) name="Dev Studio Claude"; icon="icon-solo" ;;
+  codex)  name="Dev Studio Codex";  icon="icon-hq" ;;
+  *) die "kind must be claude or codex" ;;
 esac
 app="$HOME/Applications/$name.app"
-bundle_id="dev.studio.$role"
+bundle_id="dev.studio.$kind"
+
+# The old single "Dev Studio.app" is replaced by one app per kind.
+if [ -d "$HOME/Applications/Dev Studio.app" ]; then
+  rm -rf -- "$HOME/Applications/Dev Studio.app"
+  defaults export com.apple.dock - 2>/dev/null | python3 -c '
+import plistlib, sys
+d = plistlib.load(sys.stdin.buffer)
+d["persistent-apps"] = [a for a in d.get("persistent-apps", []) if "Dev%20Studio.app/" not in str(a)]
+sys.stdout.buffer.write(plistlib.dumps(d))' > /tmp/dock.plist 2>/dev/null && defaults import com.apple.dock /tmp/dock.plist 2>/dev/null && rm -f /tmp/dock.plist
+fi
 
 say "Building $name.app…"
 rm -rf -- "$app"
@@ -45,7 +54,7 @@ cat > "$app/Contents/MacOS/launch" <<EOF
 #!/bin/bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$HOME/.npm-global/bin:\$PATH"
 mkdir -p "\$HOME/.dev-studio/logs"
-if ! STUDIO_GUI=1 "$STUDIO_HOME/bin/studio" up >>"\$HOME/.dev-studio/logs/launch.log" 2>&1; then
+if ! STUDIO_GUI=1 "$STUDIO_HOME/bin/studio" up --$kind >>"\$HOME/.dev-studio/logs/launch.log" 2>&1; then
   osascript -e 'display alert "Dev Studio hit a snag" message "Open Terminal and run: studio doctor\\n\\nDetails are in ~/.dev-studio/logs/launch.log" as critical'
 fi
 EOF

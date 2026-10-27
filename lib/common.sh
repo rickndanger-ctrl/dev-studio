@@ -60,7 +60,8 @@ load_config() {
   AGENT_KIND=claude           # claude | codex
   ROUTER=jev                  # jev | clef | rules   (jev = TypeSafe's Jev, needs TYPESAFE_API_KEY)
   CLEF_URL=''                 # a System One-compatible endpoint for ROUTER=clef
-  PROJECTS_DIR=$HOME/Developer
+  STUDIO_WORKSPACE=$HOME/DevStudio   # the team's own home: `studio up` with no project opens here
+  PROJECTS_DIR=$HOME/Developer        # where `studio up --pick` looks for projects
   LAST_PROJECT=''
   WORKERS=2                   # delegated peer sessions (haiku)
   MB_PER_AGENT=600            # memory budget per agent session, used to cap workers
