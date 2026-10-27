@@ -95,7 +95,6 @@ def cmd_send(a):
 
 
 MAX_AGE = 600       # seconds: an older signed message is a replay, not a note
-SEEN_IDS = set()    # ids this router process has already handled
 
 
 def sign(token, msg):
@@ -236,7 +235,19 @@ def agent_table(herdr):
         return {}
 
 
-def verify_sender(msg, tokens):
+def already_handled(studio, msg_id):
+    """Every handled message is archived as <ts>-<id>.json, so the archive is the
+    replay record and survives a router restart."""
+    for d in (studio.delivered, studio.held):
+        try:
+            if any(n.endswith("-%s.json" % msg_id) for n in os.listdir(d)):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def verify_sender(msg, tokens, studio=None):
     """Was this message signed with the claimed sender's own token?
     Returns (verified, note). An unsigned or badly signed message (a person at
     a terminal, or an impostor) is delivered marked UNVERIFIED, so recipients
@@ -248,11 +259,10 @@ def verify_sender(msg, tokens):
         return False, "unsigned: sent from outside %s's pane" % msg["from"]
     if not hmac.compare_digest(sign(token, msg), msg["sig"]):
         return False, "bad signature: not sent by %s" % msg["from"]
-    if now() - float(msg.get("t", 0)) > MAX_AGE:
-        return False, "stale: signed %d s ago" % (now() - float(msg["t"]))
-    if msg["id"] in SEEN_IDS:
+    if abs(now() - float(msg.get("t", 0))) > MAX_AGE:
+        return False, "stale: signed %d s from now" % abs(now() - float(msg["t"]))
+    if studio and already_handled(studio, msg["id"]):
         return False, "replay: id %s was already handled" % msg["id"]
-    SEEN_IDS.add(msg["id"])
     return True, ""
 
 
@@ -290,7 +300,7 @@ def process(s, herdr, path, peers, tokens):
         msg = json.load(f)
     if not valid_message(msg):
         raise ValueError("not a studio message")
-    verified, why = verify_sender(msg, tokens)
+    verified, why = verify_sender(msg, tokens, s)
     decision, ev = judge(msg, peers)
     row = {"kind": "route", "id": msg["id"], "from": msg["from"], "addressed": msg["to"], "decision": decision["action"],
            "to": decision["to"], "text": msg["text"][:120], "verified": verified}
