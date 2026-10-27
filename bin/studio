@@ -265,6 +265,8 @@ trust_project() {
   # trusting runs that folder's hooks and settings.
   case $PROJECT_DIR in "$HOME"|/|/Users|/Users/*/) return 0 ;; esac
   [ -d "$PROJECT_DIR/.git" ] || { warn "$PROJECT_DIR is not a git project, so I won't mark it trusted; Claude may ask you."; return 0; }
+  # The studio home is trusted only when the studio made it; a folder that was already there is the owner's call.
+  if [ "$PROJECT_DIR" = "$STUDIO_WORKSPACE" ] && [ ! -f "$STUDIO_WORKSPACE/.studio-home" ]; then return 0; fi
   jq -e --arg p "$PROJECT_DIR" '.projects[$p].hasTrustDialogAccepted == true' "$f" >/dev/null 2>&1 && return 0
   tmp=$(mktemp "$HOME/.claude.json.XXXXXX")
   if jq --arg p "$PROJECT_DIR" '.projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true})' "$f" > "$tmp"; then
@@ -318,6 +320,7 @@ ensure_studio_home() {
     mkdir -p "$STUDIO_WORKSPACE"
     [ -f "$STUDIO_WORKSPACE/README.md" ] || printf '# Dev Studio\n\nThe team works from here. Ask the architect to clone or open a project.\n' > "$STUDIO_WORKSPACE/README.md"
     git -C "$STUDIO_WORKSPACE" init -q 2>/dev/null || true
+    touch "$STUDIO_WORKSPACE/.studio-home"   # created by the studio, so trusting it is ours to decide
   fi
 }
 

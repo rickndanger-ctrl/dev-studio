@@ -20,11 +20,13 @@ bundle_id="dev.studio.$kind"
 # The old single "Dev Studio.app" is replaced by one app per kind.
 if [ -d "$HOME/Applications/Dev Studio.app" ]; then
   rm -rf -- "$HOME/Applications/Dev Studio.app"
+  dock_tmp=$(mktemp -t dock.XXXXXX) || exit 1
   defaults export com.apple.dock - 2>/dev/null | python3 -c '
 import plistlib, sys
 d = plistlib.load(sys.stdin.buffer)
 d["persistent-apps"] = [a for a in d.get("persistent-apps", []) if "Dev%20Studio.app/" not in str(a)]
-sys.stdout.buffer.write(plistlib.dumps(d))' > /tmp/dock.plist 2>/dev/null && defaults import com.apple.dock /tmp/dock.plist 2>/dev/null && rm -f /tmp/dock.plist
+sys.stdout.buffer.write(plistlib.dumps(d))' > "$dock_tmp" 2>/dev/null && defaults import com.apple.dock "$dock_tmp" 2>/dev/null
+  rm -f -- "$dock_tmp"
 fi
 
 say "Building $name.app…"
