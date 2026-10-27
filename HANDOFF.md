@@ -44,23 +44,19 @@ studio doctor
 Then click **Dev Studio** in the Dock (or run `STUDIO_GUI=1 studio up`) and watch
 `~/.dev-studio/logs/launch.log`.
 
-## Never verified against real Herdr (check these first)
-Everything below was built from Herdr's docs and tested only against `test/mock-herdr`.
-Run each command for real and compare its output with what `bin/studio` expects:
+## Verified against real Herdr 0.9.3 (2026-10-27, Mini One)
+Checked with a throwaway workspace (`studio-probe`), then closed:
 
-1. **`herdr workspace list` JSON**: `find_workspace` looks for any object whose `.label`
-   or `.name` matches and reads `.workspace_id // .id`. If this is wrong, a second click
-   builds a duplicate team instead of reopening the existing one.
-2. **`herdr agent list` JSON**: the dashboard reads `.name // .agent_name // .label // .pane_id`
-   and `.status // .state`. If this is wrong, the dashboard shows "waiting for agents to check in…" forever.
-3. **`herdr pane split --ratio`**: is the ratio the new pane's share or the old pane's?
-   The layouts assume it's the new pane's share. Check that the panes look balanced.
-4. **Server start**: `ensure_server` runs `herdr server` in the background if
-   `workspace list` fails. It may not be needed.
-5. **`herdr pane run`** right after a split: confirm the shell is ready and the
-   `claude …` command actually runs.
-6. **The terminal opener** (`open_window`): Ghostty → iTerm → Terminal.app. Confirm
-   that `herdr` attaches and shows the right workspace.
+1. **`workspace list`**: objects carry `.label` and `.workspace_id` — `find_workspace` is right.
+2. **`agent list`**: `{"agent":"claude","agent_status":"blocked","pane_id":"w3:p3",...}`.
+   The field is `agent_status` (not `status`), and `name` only appears after
+   `herdr agent rename <pane> <name>`, which `start_agent` now does once Herdr detects the
+   session. The dashboard and mock use the real shape.
+3. **`pane split --ratio`**: the share the ORIGINAL pane keeps. `split()` converts, so the
+   layouts still say "new pane's share".
+4. **Server start**: the server was already running (the TUI starts it); `ensure_server` is a fallback.
+5. **`pane run` right after a split**: works — the command ran and printed its output.
+6. **Terminal opener**: not yet confirmed (needs the Dock click).
 
 ## Open questions for the owner
 - **Clef**: what command starts it? Its free tier runs locally. Set `ROUTER_CMD` in

@@ -43,11 +43,13 @@ project_line() {
   printf '  📁 %s%s%s  🌿 %s  ✏️  %s changed\n' "$C_BOLD" "$(basename "$dir")" "$C_RESET" "$branch" "$changed"
 }
 
-# One line per agent: "name<TAB>status"
+# One line per agent: "name<TAB>status". A real herdr 0.9.3 agent looks like
+# {"name":"omac-architect","pane_id":"w1:p1","agent_status":"working",...};
+# `name` is only there once `studio` has named the agent.
 agents() {
   "$HERDR" agent list 2>/dev/null | jq -r '
-    [.. | objects | select(((.status? // .state?) | type) == "string")]
-    | .[] | "\(.name // .agent_name // .label // .pane_id // "agent")\t\(.status // .state)"' 2>/dev/null
+    [.. | objects | select(has("pane_id") and ((.agent_status? // .status?) | type) == "string")]
+    | .[] | "\(.name // .label // .pane_id)\t\(.agent_status // .status)"' 2>/dev/null
 }
 
 team_board() { # frame agent-list

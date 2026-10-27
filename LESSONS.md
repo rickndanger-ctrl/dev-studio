@@ -31,3 +31,14 @@ machine split) instead of picking sensible defaults and building.
 
 **Rule:** The owner is the creative lead, not the technician. Pick safe defaults, build,
 and say which defaults were chosen. Ask only when the answer truly changes the result.
+
+## 2026-10-27 — Built against Herdr's docs, not Herdr
+**What happened:** Two things the docs left vague were wrong on the real `herdr 0.9.3`:
+`pane split --ratio` is the share the *original* pane keeps (0.25 left the architect with a
+quarter of the screen), and `agent list` reports `agent_status`, with no `name` until the
+agent is named with `agent rename` — so the dashboard would have shown "waiting for agents"
+forever. The mock copied the docs, so 28 tests passed.
+
+**Rule:** Before trusting a CLI's JSON shape, run the real command once and paste its
+actual reply into the mock, with the date. Verify ratio-style arguments with a throwaway
+workspace and `pane layout` instead of assuming which side they apply to.

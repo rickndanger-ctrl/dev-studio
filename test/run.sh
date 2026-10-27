@@ -31,6 +31,8 @@ check "role brief has project name"          grep -q "omac-builder-1" "$STUDIO_D
 check "lessons appended to brief"            grep -q "Lessons" "$STUDIO_DATA/run/omac-architect.md"
 check "last project remembered"              grep -q "LAST_PROJECT=.*OMAC" "$STUDIO_CONF"
 check "workspace focused"                    has "workspace focus w1"
+check "architect named in herdr"             has "agent rename w1:p1 omac-architect"
+check "architect keeps 60% (herdr ratio = original's share)" has "pane split w1:p1 --direction right --ratio 0.60"
 
 echo "Second click reuses the running team"
 "$ROOT/bin/studio" up OMAC --no-attach
@@ -59,6 +61,7 @@ check "exits cleanly without a terminal" test "$rc" = 0
 [ "$rc" = 0 ] || printf '%s\n' "$out"
 check "shows the team"     grep -q "omac-architect" <<<"$out"
 check "flags blocked agent" grep -q "NEEDS YOU" <<<"$out"
+check "unnamed agent shown by pane" grep -q "w2:p1" <<<"$out"
 check "shows project"      grep -q "OMAC" <<<"$out"
 
 echo "Solo layout (default role), plenty of memory"
@@ -69,6 +72,7 @@ check "workspace labelled omac-solo"         has "--label omac-solo"
 check "architect runs opus"                  has "claude --name omac-architect --model opus"
 check "two builders"                         has "--name omac-builder-2"
 check "no messenger by default"              sh -c "! grep -q messenger '$MOCK_LOG'"
+check "dashboard gets 25% (herdr ratio = original's share)" has "pane split w1:p1 --direction down --ratio 0.75"
 check "architect told to keep status board"  grep -q "Solo studio" "$STUDIO_DATA/run/omac-architect.md"
 
 echo "Solo with little memory free: builders capped"
