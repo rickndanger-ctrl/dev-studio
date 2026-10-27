@@ -99,6 +99,14 @@ check "architect runs codex"                 has "codex -m gpt-6.1-sol"
 check "codex gets its role as first prompt"  has "omac-architect.md"
 check "agent kind remembered"                grep -q "AGENT_KIND=codex" "$STUDIO_CONF"
 check "team.json says codex"                 grep -q '"kind": *"codex"' "$PROJECT/.studio/team.json"
+# Codex's sandbox opens the outbox for every codex role.
+check "codex architect gets the outbox"      sh -c "grep -F 'omac-architect.md' '$MOCK_LOG' | grep -q -- '--add-dir [^ ]*/mail/outbox'"
+check "codex main gets the outbox"           sh -c "grep -F 'omac-main.md' '$MOCK_LOG' | grep -q -- '--add-dir [^ ]*/mail/outbox'"
+check "codex worker-1 gets the outbox"       sh -c "grep -F 'omac-worker-1.md' '$MOCK_LOG' | grep -q -- '--add-dir [^ ]*/mail/outbox'"
+check "codex worker-2 gets the outbox"       sh -c "grep -F 'omac-worker-2.md' '$MOCK_LOG' | grep -q -- '--add-dir [^ ]*/mail/outbox'"
+check "codex architect has only the outbox"  sh -c "test \$(grep -F 'omac-architect.md' '$MOCK_LOG' | grep -o -- '--add-dir' | wc -l) = 1"
+check "codex main has only the outbox"       sh -c "test \$(grep -F 'omac-main.md' '$MOCK_LOG' | grep -o -- '--add-dir' | wc -l) = 1"
+check "add-dir paths are absolute"           sh -c "! grep -E -- \"--add-dir '?[^/']\" '$MOCK_LOG'"
 
 echo "Mixed team: codex worker-1, claude worker-2"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
@@ -156,6 +164,48 @@ WEB2_PID=$!
 for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 2 -o /dev/null http://127.0.0.1:8796/health && break; sleep 0.3; done
 check "web state gives worker-1 kind codex"  sh -c "curl -s -m 5 http://127.0.0.1:8796/api/state | python3 -c 'import json,sys; d=json.load(sys.stdin); assert [a[\"kind\"] for a in d[\"agents\"] if a[\"name\"].endswith(\"worker-1\")] == [\"codex\"]'"
 kill "$WEB2_PID" 2>/dev/null; wait "$WEB2_PID" 2>/dev/null || true
+
+echo "Claude roles get no codex sandbox folders"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "claude team has no add-dir at all"    sh -c "! grep -q -- '--add-dir' '$MOCK_LOG'"
+check "claude worker-2 keeps its worktree"   has "claude --name omac-worker-2 --model haiku --worktree worker-2"
+
+echo "Paths with a space are quoted"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+mkdir -p "$HOME/Developer/Spaced Repo" && git -C "$HOME/Developer/Spaced Repo" init -q
+git -C "$HOME/Developer/Spaced Repo" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "Spaced Repo" --no-attach --codex
+check "outbox path is shell-quoted"         grep -qF 'Spaced\ Repo/.studio/mail/outbox' "$MOCK_LOG"
+check "worker worktree path is shell-quoted" grep -qF 'Spaced\ Repo/.claude/worktrees/worker-1' "$MOCK_LOG"
+
+echo "A project reached through a symlink gets its real path in the grants"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+mkdir -p "$T/real" && git -C "$T/real" init -q Linked-Repo
+git -C "$T/real/Linked-Repo" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
+ln -s "$T/real/Linked-Repo" "$HOME/Developer/Linked"
+REAL=$(cd "$T/real/Linked-Repo" && pwd -P)
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "$HOME/Developer/Linked" --no-attach --codex
+check "outbox grant uses the real path"      grep -qF -- "--add-dir $REAL/.studio/mail/outbox" "$MOCK_LOG"
+check "no grant uses the symlink path"       sh -c "! grep -qF -- '--add-dir $HOME/Developer/Linked' '$MOCK_LOG'"
+
+echo "An outbox that resolves outside the project gets no grant"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+TRAP_DIR=$HOME/Developer/Trap
+mkdir -p "$TRAP_DIR" && git -C "$TRAP_DIR" init -q
+git -C "$TRAP_DIR" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "$TRAP_DIR" --no-attach --codex >/dev/null 2>&1
+mkdir -p "$T/elsewhere"
+rm -rf "$TRAP_DIR/.studio/mail/outbox" && ln -s "$T/elsewhere" "$TRAP_DIR/.studio/mail/outbox"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+trap_out=$(STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "$TRAP_DIR" --no-attach --codex 2>&1)
+check "warns that the outbox is not granted" grep -q "Not granting trap-architect the outbox" <<<"$trap_out"
+check "no grant points at the symlink target" sh -c "! grep -q -- 'elsewhere' '$MOCK_LOG'"
+check "codex still starts, without that grant" has "codex -m gpt-6.1-sol"
 
 echo "Little memory free: workers capped"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
