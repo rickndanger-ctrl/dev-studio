@@ -115,11 +115,12 @@ while :; do
   list=$(agents)
   chime "$list"
   out=$(render "$frame" "$list")
-  tput cup 0 0 2>/dev/null || clear
+  tput cup 0 0 2>/dev/null || clear 2>/dev/null
   printf '%s' "$out"
   tput ed 2>/dev/null
   [ "${STUDIO_DASH_ONCE:-0}" = 1 ] && break
   sleep "$REFRESH"
   frame=$((frame + 1))
 done
-tput cnorm 2>/dev/null
+tput cnorm 2>/dev/null || true
+exit 0

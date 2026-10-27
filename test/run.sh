@@ -20,7 +20,7 @@ has() { grep -qF -- "$1" "$MOCK_LOG"; }
 creates() { grep -c '^workspace create' "$MOCK_LOG"; }
 
 echo "HQ layout"
-echo "STUDIO_ROLE=hq" > "$STUDIO_CONF"
+printf 'STUDIO_ROLE=hq\nSOUNDS=0\n' > "$STUDIO_CONF"
 "$ROOT/bin/studio" up OMAC --no-attach
 check "workspace labelled omac-hq"           has "--label omac-hq"
 check "architect runs opus"                  has "claude --name omac-architect --model opus"
@@ -53,14 +53,17 @@ PATH=$T/bin:$PATH "$ROOT/bin/studio" up OMAC --no-attach
 check "builder launched through jev-claude"  has "jev-claude --name omac-builder-1 --worktree builder-1"
 
 echo "Dashboard renders"
-out=$(STUDIO_DASH_ONCE=1 "$ROOT/bin/studio" dash 2>&1)
+rc=0
+out=$(env -u TERM STUDIO_DASH_ONCE=1 "$ROOT/bin/studio" dash 2>&1) || rc=$?
+check "exits cleanly without a terminal" test "$rc" = 0
+[ "$rc" = 0 ] || printf '%s\n' "$out"
 check "shows the team"     grep -q "omac-architect" <<<"$out"
 check "flags blocked agent" grep -q "NEEDS YOU" <<<"$out"
 check "shows project"      grep -q "OMAC" <<<"$out"
 
 echo "Solo layout (default role), plenty of memory"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
-printf 'PROJECTS_DIR=%s\n' "$HOME/Developer" > "$STUDIO_CONF"
+printf 'PROJECTS_DIR=%s\nSOUNDS=0\n' "$HOME/Developer" > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
 check "workspace labelled omac-solo"         has "--label omac-solo"
 check "architect runs opus"                  has "claude --name omac-architect --model opus"
