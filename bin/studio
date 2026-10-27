@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Dev Studio: one click opens a ready-made team of Claude Code sessions in Herdr.
-#   studio up [project]   open (or reopen) the team for a project
-#   studio dash           live team dashboard (runs inside the studio)
+# Dev Studio: one click opens a team of coding-agent sessions in Herdr, with a
+# board that shows JEV routing every message between them.
+#   studio up [project] [--codex|--claude] [--router jev|clef|rules]
+#   studio board          the board (runs inside the studio's first tab)
+#   studio router         the message router (runs inside the studio's team tab)
+#   studio send FROM TO "text"   send a peer message through the router
+#   studio ask "text"     dry run: what would the router decide?
 #   studio doctor         check everything is installed
-#   studio stop           stop Herdr and every agent in it
+#   studio stop           stop the studio's Herdr session and every agent in it
 set -u
 
 SELF=$0
@@ -20,12 +24,13 @@ usage() {
   cat <<EOF
 ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
 
-  studio up [project]     open the team for a project (folder name or path)
-  studio up --no-attach   build the team without opening a window
-  studio dash             live team dashboard
+  studio up [project] [--codex|--claude] [--router jev|clef|rules] [--no-attach]
+                          open (or reopen) the team for a project
+  studio board            the live board (what the first tab shows)
+  studio send FROM TO "note"   send a peer message through the router (TO = @name or auto)
+  studio ask "note"       dry run: show what the router would decide
   studio doctor           check that everything is installed
-  studio role solo|hq|workshop  switch this machine's role
-  studio stop             stop the studio's Herdr session and every agent in it
+  studio stop             stop the studio and every agent in it
 EOF
 }
 
@@ -51,54 +56,46 @@ find_workspace() {
     [.. | objects | select(.label? == $l or .name? == $l) | (.workspace_id // .id // empty)] | first // empty' 2>/dev/null
 }
 
-new_workspace() { # label cwd -> root pane id
-  hd workspace create --cwd "$2" --label "$1" --no-focus | jq -r '.result.root_pane.pane_id'
+new_workspace() { # label cwd -> "workspace-id root-pane-id"
+  hd workspace create --cwd "$2" --label "$1" --no-focus | jq -r '"\(.result.workspace.workspace_id) \(.result.root_pane.pane_id)"'
 }
 
-split() { # pane direction new-pane-share cwd -> new pane id
+new_tab() { # workspace label cwd [env] -> root pane id
+  hd tab create --workspace "$1" --label "$2" --cwd "$3" ${4:+--env "$4"} --no-focus | jq -r '.result.root_pane.pane_id'
+}
+
+split() { # pane direction new-pane-share cwd [env] -> new pane id
   # Herdr's --ratio is the share the ORIGINAL pane keeps (checked on herdr 0.9.3:
   # `split down 0.25` left the original 10 of 40 rows), so convert from the share
   # the layouts give the new pane.
   local keep
   keep=$(awk -v r="$3" 'BEGIN { printf "%.2f", 1 - r }')
-  hd pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" --no-focus | jq -r '.result.pane.pane_id'
+  hd pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" ${5:+--env "$5"} --no-focus | jq -r '.result.pane.pane_id'
+}
+
+# Each agent's pane gets its own secret (STUDIO_TOKEN) so `studio send` can sign
+# messages; only the router pane gets the whole map (STUDIO_TOKENS). Neither is
+# written to disk, so an agent cannot read another agent's token from a file.
+new_token() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+TOKENS_JSON='{}'
+issue_token() { # name -> sets TOKEN and remembers it for the router (no subshell: the map must survive)
+  TOKEN=$(new_token)
+  TOKENS_JSON=$(printf '%s' "$TOKENS_JSON" | jq -c --arg n "$1" --arg t "$TOKEN" '. + {($n): $t}')
 }
 
 # --- Agents --------------------------------------------------------------------
 
-# Write this agent's role brief with the real project name filled in.
+# Write this agent's role brief with the real names filled in.
 role_file() { # role agent-name -> path
   local out="$STUDIO_DATA/run/$2.md"
   mkdir -p "$STUDIO_DATA/run"
-  sed "s/<project>/$PROJECT_SLUG/g" "$STUDIO_HOME/roles/$1.md" > "$out"
-  if [ "$1" = architect ] && [ "$STUDIO_ROLE" = solo ] && [ "$MESSENGER" != 1 ]; then
-    printf '\n## Solo studio\nThere is no messenger on this team. Keep the status board in .studio/status.md yourself, briefly.\nThe builders run on this same Mac, and memory is tight: give each builder one task at a time.\n' >> "$out"
-  fi
+  sed -e "s/<project>/$PROJECT_SLUG/g" -e "s/<me>/$2/g" -e "s#<studio-dir>#$STUDIO_DIR#g" "$STUDIO_HOME/roles/$1.md" > "$out"
   [ -f "$STUDIO_HOME/LESSONS.md" ] && { printf '\n\n'; cat "$STUDIO_HOME/LESSONS.md"; } >> "$out"
   printf '%s' "$out"
 }
 
-# start_agent pane label role name model [worktree] [router]
-start_agent() {
-  local pane=$1 label=$2 role=$3 name=$4 model=$5 worktree=${6:-} router=${7:-}
-  local exe=claude cmd
-  if [ -n "$router" ] && [ -n "${ROUTER_CMD:-}" ] && command -v "$ROUTER_CMD" >/dev/null 2>&1; then
-    exe=$ROUTER_CMD   # the router picks the model each turn
-    model=''
-  fi
-  cmd="$exe --name $name"
-  [ -n "$model" ] && cmd="$cmd --model $model"
-  [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
-  cmd="$cmd --settings $(printf %q "$STUDIO_HOME/settings/peer.json")"
-  cmd="$cmd --append-system-prompt-file $(printf %q "$(role_file "$role" "$name")")"
-  hd pane rename "$pane" "$label" >/dev/null 2>&1 || true
-  hd pane run "$pane" "$cmd" >/dev/null
-  name_agent "$pane" "$name"
-}
-
-# Herdr only knows an agent by its pane until it is named, and it can't be named
-# before it has detected the Claude session (herdr 0.9.3). Retry the rename until
-# detection, so the dashboard and `herdr agent` can address the agent by name.
+# Tell Herdr the agent's name once it detects the session. Herdr only knows an
+# agent by its pane until it is named (herdr 0.9.3), so retry until detection.
 name_agent() { # pane name
   local i=0
   while [ $i -lt 60 ]; do
@@ -108,97 +105,105 @@ name_agent() { # pane name
   warn "Herdr hasn't spotted $2 yet, so its pane shows as $1 for now."
 }
 
-start_dash() {
-  hd pane rename "$1" "✨ studio" >/dev/null 2>&1 || true
-  hd pane run "$1" "$(printf %q "$STUDIO_HOME/bin/studio") dash" >/dev/null
+# start_agent pane label role name model [worktree]
+start_agent() {
+  local pane=$1 label=$2 role=$3 name=$4 model=$5 worktree=${6:-} brief cmd
+  brief=$(role_file "$role" "$name")
+  if [ "$AGENT_KIND" = codex ]; then
+    # Codex has no system-prompt flag: the role brief is its first prompt.
+    cmd="codex -m $model $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
+  else
+    cmd="claude --name $name --model $model"
+    [ -n "$worktree" ] && cmd="$cmd --worktree $worktree"
+    cmd="$cmd --settings $(printf %q "$STUDIO_HOME/settings/peer.json")"
+    cmd="$cmd --append-system-prompt-file $(printf %q "$brief")"
+  fi
+  hd pane rename "$pane" "$label" >/dev/null 2>&1 || true
+  hd pane run "$pane" "$cmd" >/dev/null
+  name_agent "$pane" "$name"
 }
 
-# --- Layouts ---------------------------------------------------------------------
+start_pane_cmd() { # pane label command
+  hd pane rename "$1" "$2" >/dev/null 2>&1 || true
+  hd pane run "$1" "$3" >/dev/null
+}
 
-# Cap builders so the whole team fits in the memory that's free right now.
-fit_builders() {
-  local avail per=${MB_PER_AGENT:-600} others=1 max
-  [ "$STUDIO_ROLE" = solo ] && [ "$MESSENGER" = 1 ] && others=2
-  [ "$STUDIO_ROLE" = workshop ] && others=1
+# The router and board need to know who is on the team and what each one does.
+write_peers() {
+  local n=1 json
+  json="{\"$PROJECT_SLUG-architect\":{\"role\":\"architect: plans, audits, signs off before merge\",\"model\":\"$ARCH_M\"},"
+  json="$json\"$PROJECT_SLUG-main\":{\"role\":\"main session: builds the feature, syncs schemas, patches dependents\",\"model\":\"$MAIN_M\"}"
+  while [ $n -le "$WORKERS" ]; do
+    json="$json,\"$PROJECT_SLUG-worker-$n\":{\"role\":\"worker $n: small delegated tasks in its own worktree\",\"model\":\"$WORKER_M\"}"
+    n=$((n + 1))
+  done
+  printf '%s}\n' "$json" | jq . > "$STUDIO_DIR/peers.json"
+  jq -n --arg k "$AGENT_KIND" --arg r "$ROUTER" --arg a "$ARCH_M" --arg m "$MAIN_M" --arg w "$WORKER_M" --argjson n "$WORKERS" \
+    '{kind: $k, router: $r, arch_model: $a, main_model: $m, worker_model: $w, workers: $n}' > "$STUDIO_DIR/team.json"
+}
+
+# A project's team (kind, router, models) is what was launched for it, not
+# whatever the config says now: another project may have been opened since.
+load_team() {
+  [ -f "$STUDIO_DIR/team.json" ] || return 0
+  AGENT_KIND=$(jq -r .kind "$STUDIO_DIR/team.json")
+  ROUTER=$(jq -r .router "$STUDIO_DIR/team.json")
+  ARCH_M=$(jq -r .arch_model "$STUDIO_DIR/team.json")
+  MAIN_M=$(jq -r .main_model "$STUDIO_DIR/team.json")
+  WORKER_M=$(jq -r .worker_model "$STUDIO_DIR/team.json")
+  WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
+}
+
+# --- Layout ------------------------------------------------------------------------
+
+# Cap workers so the whole team fits in the memory that's free right now.
+fit_workers() {
+  local avail per=${MB_PER_AGENT:-600} others=2 max
   avail=$(mem_available_mb)
   case $avail in ''|*[!0-9]*) return 0 ;; esac
   max=$(( (avail - ${MEM_RESERVE_MB:-1536}) / per - others ))
   [ "$max" -lt 1 ] && max=1
-  if [ "$BUILDERS" -gt "$max" ]; then
-    warn "Only ${avail}MB of memory free, so starting $max builder(s) instead of $BUILDERS."
-    BUILDERS=$max
+  if [ "$WORKERS" -gt "$max" ]; then
+    warn "Only ${avail}MB of memory free, so starting $max worker(s) instead of $WORKERS."
+    WORKERS=$max
   fi
 }
 
-# Lean single-Mac team.
-#  ┌──────────────┬──────────┐
-#  │              │ 🔨 b-1   │
-#  │ 🏛 architect  ├──────────┤
-#  │              │ 🔨 b-2   │
-#  ├──────────────┴──────────┤
-#  │ ✨ studio                │
-#  └─────────────────────────┘
-layout_solo() {
-  local root dash col pane next n=1 left
-  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
-  dash=$(split "$root" down 0.25 "$PROJECT_DIR")
-  col=$(split "$root" right 0.5 "$PROJECT_DIR")
-  start_agent "$root" "🏛 architect · $ARCHITECT_MODEL" architect "$PROJECT_SLUG-architect" "$ARCHITECT_MODEL"
+# Tab 1 "board": the picture.   Tab 2 "team": the terminals.
+#  ┌──────────────┬──────────────┐
+#  │              │ main         │
+#  │ architect    ├──────────────┤
+#  │              │ worker-1     │
+#  ├──────────────┼──────────────┤
+#  │ router       │ worker-2 …   │
+#  └──────────────┴──────────────┘
+layout() {
+  local ws root team col router pane next n=1 left TOKEN
+  # shellcheck disable=SC2046
+  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR")
+  ws=$1; root=$2
+  hd tab rename "$ws:t1" board >/dev/null 2>&1 || true
+  start_pane_cmd "$root" "board" "$(printf %q "$STUDIO_HOME/bin/studio") board $(printf %q "$PROJECT_DIR")"
+  issue_token "$PROJECT_SLUG-architect"
+  team=$(new_tab "$ws" team "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  issue_token "$PROJECT_SLUG-main"
+  col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+  write_peers
+  start_agent "$team" "architect · $ARCH_M" architect "$PROJECT_SLUG-architect" "$ARCH_M"
+  start_agent "$col" "main · $MAIN_M" main "$PROJECT_SLUG-main" "$MAIN_M"
   pane=$col
-  while [ $n -le "$BUILDERS" ]; do
-    left=$((BUILDERS - n))
-    if [ $left -gt 0 ]; then
-      next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR")
-    fi
-    start_agent "$pane" "🔨 builder-$n" builder "$PROJECT_SLUG-builder-$n" "$BUILDER_MODEL" "builder-$n" router
-    [ $left -gt 0 ] && pane=$next
+  while [ $n -le "$WORKERS" ]; do
+    left=$((WORKERS - n + 1))
+    issue_token "$PROJECT_SLUG-worker-$n"
+    next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "STUDIO_TOKEN=$TOKEN")
+    start_agent "$next" "worker-$n · $WORKER_M" worker "$PROJECT_SLUG-worker-$n" "$WORKER_M" "worker-$n"
+    pane=$next
     n=$((n + 1))
   done
-  if [ "$MESSENGER" = 1 ]; then
-    next=$(split "$dash" right 0.35 "$PROJECT_DIR")   # the board needs the width more
-    start_agent "$next" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-messenger" "$MESSENGER_MODEL"
-  fi
-  start_dash "$dash"
-}
-
-#  ┌──────────────┬──────────┐
-#  │              │ ✨ studio │
-#  │ 🏛 architect  ├──────────┤
-#  │              │ 📣 runner │
-#  └──────────────┴──────────┘
-layout_hq() {
-  local root right bottom
-  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
-  right=$(split "$root" right 0.4 "$PROJECT_DIR")
-  bottom=$(split "$right" down 0.5 "$PROJECT_DIR")
-  start_agent "$root" "🏛 architect · $ARCHITECT_MODEL" architect "$PROJECT_SLUG-architect" "$ARCHITECT_MODEL"
-  start_dash "$right"
-  start_agent "$bottom" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-messenger" "$MESSENGER_MODEL"
-}
-
-#  ┌──────────┬──────────┬──────────┐
-#  │ 🔨 b-1   │ 🔨 b-2   │ 🔨 b-3   │
-#  ├──────────┴────┬─────┴──────────┤
-#  │ 📣 messenger  │ ✨ studio       │
-#  └───────────────┴────────────────┘
-layout_workshop() {
-  local root bottom dash pane next n=1 left
-  root=$(new_workspace "$WS_LABEL" "$PROJECT_DIR")
-  bottom=$(split "$root" down 0.3 "$PROJECT_DIR")
-  dash=$(split "$bottom" right 0.5 "$PROJECT_DIR")
-  pane=$root
-  while [ $n -le "$BUILDERS" ]; do
-    left=$((BUILDERS - n))
-    if [ $left -gt 0 ]; then
-      # Give the remaining builders an equal share of what's left of the row.
-      next=$(split "$pane" right "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR")
-    fi
-    start_agent "$pane" "🔨 builder-$n" builder "$PROJECT_SLUG-builder-$n" "$BUILDER_MODEL" "builder-$n" router
-    [ $left -gt 0 ] && pane=$next
-    n=$((n + 1))
-  done
-  start_agent "$bottom" "📣 messenger · $MESSENGER_MODEL" messenger "$PROJECT_SLUG-shop-messenger" "$MESSENGER_MODEL"
-  start_dash "$dash"
+  # The router pane is split last so its environment can carry every token.
+  router=$(split "$team" down 0.25 "$PROJECT_DIR" "STUDIO_TOKENS=$TOKENS_JSON")
+  start_pane_cmd "$router" "router · $ROUTER" "$(printf %q "$STUDIO_HOME/bin/studio") router $(printf %q "$PROJECT_DIR")"
+  WS_ID=$ws
 }
 
 # --- Picking a project -------------------------------------------------------------
@@ -241,6 +246,14 @@ resolve_project() {
   esac
 }
 
+# The project's .studio folder holds the mailbox and logs; keep it out of git.
+prepare_studio_dir() {
+  mkdir -p "$STUDIO_DIR/mail/outbox" "$STUDIO_DIR/mail/delivered" "$STUDIO_DIR/mail/held"
+  if [ -d "$PROJECT_DIR/.git/info" ] && ! grep -qs '^\.studio/$' "$PROJECT_DIR/.git/info/exclude"; then
+    printf '.studio/\n' >> "$PROJECT_DIR/.git/info/exclude"
+  fi
+}
+
 # --- Opening the window ------------------------------------------------------------
 
 open_window() {
@@ -266,40 +279,64 @@ open_window() {
 
 # --- Commands -------------------------------------------------------------------------
 
+# Models for the chosen agent kind.
+pick_models() {
+  if [ "$AGENT_KIND" = codex ]; then
+    ARCH_M=$CODEX_ARCHITECT_MODEL; MAIN_M=$CODEX_MAIN_MODEL; WORKER_M=$CODEX_WORKER_MODEL
+  else
+    ARCH_M=$ARCHITECT_MODEL; MAIN_M=$MAIN_MODEL; WORKER_M=$WORKER_MODEL
+  fi
+}
+
+set_project() { # project-arg
+  PROJECT_DIR=$(resolve_project "$1")
+  [ -n "$PROJECT_DIR" ] || die "Can't find project '$1' (looked in $PROJECTS_DIR)"
+  PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
+  STUDIO_DIR=$PROJECT_DIR/.studio
+  WS_LABEL="$PROJECT_SLUG-$AGENT_KIND"
+}
+
 cmd_up() {
-  local attach=1 arg=''
+  local attach=1 arg='' expect=''
   for a in "$@"; do
-    case $a in --no-attach) attach=0 ;; *) arg=$a ;; esac
+    if [ -n "$expect" ]; then ROUTER=$a; expect=''; continue; fi
+    case $a in
+      --no-attach) attach=0 ;;
+      --codex)  AGENT_KIND=codex ;;
+      --claude) AGENT_KIND=claude ;;
+      --router) expect=router ;;
+      --router=*) ROUTER=${a#--router=} ;;
+      *) arg=$a ;;
+    esac
   done
+  case $ROUTER in jev|clef|rules) ;; *) die "Unknown router '$ROUTER'. Use jev, clef or rules." ;; esac
+  case $AGENT_KIND in claude|codex) ;; *) die "Unknown agent kind '$AGENT_KIND'. Use claude or codex." ;; esac
   command -v "$HERDR" >/dev/null 2>&1 || die "Herdr isn't installed. Run: brew install herdr"
   command -v jq >/dev/null 2>&1 || die "jq isn't installed. Run: brew install jq"
+  command -v "$AGENT_KIND" >/dev/null 2>&1 || die "$AGENT_KIND isn't installed."
 
   if [ -z "$arg" ]; then
     arg=$(pick_project) || exit 1
     [ -n "$arg" ] || exit 0   # picker cancelled
   fi
-  PROJECT_DIR=$(resolve_project "$arg")
-  [ -n "$PROJECT_DIR" ] || die "Can't find project '$arg' (looked in $PROJECTS_DIR)"
-  PROJECT_SLUG=$(slug "$(basename "$PROJECT_DIR")")
-  WS_LABEL="$PROJECT_SLUG-$STUDIO_ROLE"
+  set_project "$arg"
+  pick_models
   set_config LAST_PROJECT "$PROJECT_DIR"
+  set_config AGENT_KIND "$AGENT_KIND"
+  set_config ROUTER "$ROUTER"
+  prepare_studio_dir
 
   ensure_server
   local ws
   ws=$(find_workspace "$WS_LABEL")
   if [ -n "$ws" ]; then
-    ok "The $PROJECT_SLUG team is already at work. Opening it…"
+    ok "The $PROJECT_SLUG team ($AGENT_KIND) is already at work. Opening it…"
   else
-    say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team on ${C_BOLD}$STUDIO_ROLE${C_RESET}…"
-    fit_builders
-    case $STUDIO_ROLE in
-      solo) layout_solo ;;
-      hq) layout_hq ;;
-      workshop) layout_workshop ;;
-      *) die "Unknown role '$STUDIO_ROLE'. Run: studio role solo|hq|workshop" ;;
-    esac
-    ws=$(find_workspace "$WS_LABEL")
-    ok "Team assembled."
+    say "Assembling the ${C_BOLD}$PROJECT_SLUG${C_RESET} team: ${C_BOLD}$AGENT_KIND${C_RESET}, router ${C_BOLD}$ROUTER${C_RESET}…"
+    fit_workers
+    layout
+    ws=$WS_ID
+    ok "Team assembled: architect ($ARCH_M), main ($MAIN_M), $WORKERS worker(s) ($WORKER_M), router ($ROUTER)."
     play_sound Glass
   fi
   [ -n "$ws" ] && hd workspace focus "$ws" >/dev/null 2>&1
@@ -307,11 +344,59 @@ cmd_up() {
   return 0
 }
 
-cmd_role() {
-  case ${1:-} in
-    solo|hq|workshop) set_config STUDIO_ROLE "$1"; ok "This machine is now ${C_BOLD}$1${C_RESET}." ;;
-    *) die "Usage: studio role solo|hq|workshop" ;;
-  esac
+cmd_board() {
+  local dir=${1:-$LAST_PROJECT}
+  [ -n "$dir" ] || die "Which project? studio board /path/to/project"
+  set_project "$dir"; pick_models; load_team
+  # shellcheck disable=SC2086
+  exec "$PYTHON" "$STUDIO_HOME/ui/board.py" --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --kind "$AGENT_KIND" \
+    --arch-model "$ARCH_M" --main-model "$MAIN_M" --worker-model "$WORKER_M" ${STUDIO_BOARD_ONCE:+--once}
+}
+
+# The router runs under this restart loop, in its own pane, so a crash is
+# visible and never silent.
+cmd_router() {
+  local dir=${1:-$LAST_PROJECT} rc
+  [ -n "$dir" ] || die "Which project? studio router /path/to/project"
+  set_project "$dir"; load_team
+  export ROUTER CLEF_URL
+  while :; do
+    "$PYTHON" "$STUDIO_HOME/router/router.py" daemon --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" ${STUDIO_ROUTER_ONCE:+--once}
+    rc=$?
+    [ "${STUDIO_ROUTER_ONCE:-0}" = 1 ] && return "$rc"
+    printf '%s router exited (rc=%s); restarting in 2s. Ctrl-C to stop.\n' "$(date '+%H:%M:%S')" "$rc"
+    sleep 2
+  done
+}
+
+# Agents call `studio send` from inside the project (or a worktree under it), so
+# the mailbox is found by walking up from the current folder. The last-opened
+# project is only a fallback, so two teams on two projects never cross wires.
+find_project_from_cwd() {
+  local d=$PWD
+  while [ "$d" != / ] && [ -n "$d" ]; do
+    [ -f "$d/.studio/peers.json" ] && { printf '%s' "$d"; return 0; }
+    d=$(dirname "$d")
+  done
+  [ -n "${LAST_PROJECT:-}" ] && printf '%s' "$LAST_PROJECT"
+}
+
+cmd_send() { # from to text...
+  [ $# -ge 3 ] || die "Usage: studio send FROM @TO|auto \"note\""
+  local from=$1 to=$2 dir; shift 2
+  dir=$(find_project_from_cwd)
+  [ -n "$dir" ] || die "No studio project here (no .studio folder above $PWD)."
+  set_project "$dir"
+  "$PYTHON" "$STUDIO_HOME/router/router.py" send --studio "$STUDIO_DIR" --from "$from" --to "$to" --text "$*"
+}
+
+cmd_ask() {
+  local dir
+  dir=$(find_project_from_cwd)
+  [ -n "$dir" ] || die "No studio project here (no .studio folder above $PWD)."
+  set_project "$dir"; load_team
+  export ROUTER CLEF_URL
+  "$PYTHON" "$STUDIO_HOME/router/router.py" ask --studio "$STUDIO_DIR" --from "${STUDIO_AGENT:-$PROJECT_SLUG-main}" --to "${STUDIO_TO:-auto}" --text "$*"
 }
 
 version_at_least() { # have want
@@ -325,25 +410,27 @@ cmd_doctor() {
   check() { # label command hint
     if command -v "$2" >/dev/null 2>&1; then ok "$1"; else warn "$1 missing. $3"; bad=1; fi
   }
-  printf '%s\n' "${C_PINK}${C_BOLD}Dev Studio checkup${C_RESET}  (role: $STUDIO_ROLE)"
+  printf '%s\n' "${C_PINK}${C_BOLD}Dev Studio checkup${C_RESET}  (agents: $AGENT_KIND, router: $ROUTER)"
   check "Herdr"       "$HERDR" "brew install herdr"
   check "Claude Code" claude   "https://code.claude.com/docs/en/setup"
+  check "Codex"       codex    "npm install -g @openai/codex (only needed for --codex)"
   check "jq"          jq       "brew install jq"
+  check "python3"     "$PYTHON" "xcode-select --install"
   check "git"         git      "xcode-select --install"
-  if [ -n "${ROUTER_CMD:-}" ]; then
-    if command -v "$ROUTER_CMD" >/dev/null 2>&1; then ok "Router ($ROUTER_CMD): builders pick their model each turn"
-    else warn "Router ($ROUTER_CMD) not found: builders will use $BUILDER_MODEL. Optional: npm install -g jev-router"; fi
-  fi
+  case $ROUTER in
+    jev)  if [ -n "${TYPESAFE_API_KEY:-}" ]; then ok "JEV router: TYPESAFE_API_KEY is set"
+          else warn "JEV router: TYPESAFE_API_KEY is not set, so the router falls back to rules. Add it to ~/.zshrc."; bad=1; fi ;;
+    clef) if [ -n "${CLEF_URL:-}" ]; then ok "Clef router: $CLEF_URL"
+          else warn "Clef router: set CLEF_URL in $STUDIO_CONF (a System One-compatible endpoint)."; bad=1; fi ;;
+    *)    ok "Rules router: no model, explicit addresses only" ;;
+  esac
   if command -v claude >/dev/null 2>&1; then
     v=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    if [ -n "$v" ] && version_at_least "$v" 2.1.224; then
-      ok "Claude Code $v supports cross-session messaging"
-    else
-      warn "Claude Code ${v:-?} is too old for cross-session messaging. Run: claude update"; bad=1
-    fi
+    if [ -n "$v" ] && version_at_least "$v" 2.1.224; then ok "Claude Code $v supports cross-session messaging"
+    else warn "Claude Code ${v:-?} is too old for cross-session messaging. Run: claude update"; bad=1; fi
   fi
   v=$(mem_available_mb)
-  ok "Memory free: ${v}MB, room for about $(( v > MEM_RESERVE_MB ? (v - MEM_RESERVE_MB) / MB_PER_AGENT : 0 )) Claude sessions"
+  ok "Memory free: ${v}MB, room for about $(( v > MEM_RESERVE_MB ? (v - MEM_RESERVE_MB) / MB_PER_AGENT : 0 )) agent sessions"
   if [ -d "$PROJECTS_DIR" ]; then ok "Projects folder: $PROJECTS_DIR ($(list_projects | wc -l | tr -d ' ') projects)"
   else warn "Projects folder $PROJECTS_DIR doesn't exist. Set PROJECTS_DIR in $STUDIO_CONF"; bad=1; fi
   [ $bad = 0 ] && ok "${C_BOLD}All good. Click the Studio icon in your Dock.${C_RESET}"
@@ -359,9 +446,11 @@ cmd_stop() {
 load_config
 case ${1:-help} in
   up)     shift; cmd_up "$@" ;;
-  dash)   shift; exec "$STUDIO_HOME/ui/dashboard.sh" "$@" ;;
+  board|dash) shift; cmd_board "$@" ;;
+  router) shift; cmd_router "$@" ;;
+  send)   shift; cmd_send "$@" ;;
+  ask)    shift; cmd_ask "$@" ;;
   doctor) cmd_doctor ;;
-  role)   shift; cmd_role "$@" ;;
   stop)   cmd_stop ;;
   help|-h|--help) usage ;;
   *)      usage; exit 2 ;;

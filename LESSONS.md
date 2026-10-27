@@ -56,3 +56,15 @@ own `XDG_STATE_HOME` so no saved machine can steal the view; keep the server on 
 environment. Measure a terminal with `stty size </dev/tty`, every frame. And confirm a window
 with a screenshot of the window (the pane's text read looked fine while the user would have
 seen another Mac).
+
+## 2026-10-27 — A test run sent fake teammate messages into the live studio
+**What happened:** Running `test/run.sh` from the repo folder leaked three fixture messages
+("the user schema changed to UUID", "blocked on the api key", "thanks") into the real
+`.studio` mailbox. `studio send` finds its project from the folder it runs in, and the test
+called it from the repo, not from the throwaway fixture project. The live router delivered
+them to the real main session as if teammates had written them.
+
+**Rule:** Any test that calls `studio send`, `ask` or the router must run from inside the
+fixture project (`cd "$PROJECT"`), never the real repo. After a test run, check the real
+`.studio/mail` for new files. A relay from a name that is not on this team (`omac-*`) is a
+fixture leak: ignore it and say so.

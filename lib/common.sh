@@ -6,6 +6,7 @@ STUDIO_HOME=${STUDIO_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 STUDIO_DATA=${STUDIO_DATA:-$HOME/.dev-studio}
 STUDIO_CONF=${STUDIO_CONF:-$STUDIO_DATA/studio.conf}
 HERDR=${HERDR:-herdr}
+PYTHON=${PYTHON:-python3}
 
 # Every Herdr call goes through here. The studio lives in its own named Herdr
 # session (own server, own window), so a fresh client opens straight on the team
@@ -13,6 +14,12 @@ HERDR=${HERDR:-herdr}
 hd() {
   if [ -n "${STUDIO_SESSION:-}" ]; then "$HERDR" --session "$STUDIO_SESSION" "$@"
   else "$HERDR" "$@"; fi
+}
+
+# The herdr command line other programs (router, board) should use for CLI calls.
+herdr_cli_cmd() {
+  if [ -n "${STUDIO_SESSION:-}" ]; then printf '%s --session %s' "$HERDR" "$STUDIO_SESSION"
+  else printf '%s' "$HERDR"; fi
 }
 
 # The command a terminal window runs to attach to the studio's session.
@@ -49,19 +56,22 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 
 # Defaults, then the user's config on top.
 load_config() {
-  STUDIO_ROLE=solo            # solo | hq | workshop
   STUDIO_SESSION=dev-studio   # named Herdr session for the team; blank = the default one
+  AGENT_KIND=claude           # claude | codex
+  ROUTER=jev                  # jev | clef | rules   (jev = TypeSafe's Jev, needs TYPESAFE_API_KEY)
+  CLEF_URL=''                 # a System One-compatible endpoint for ROUTER=clef
   PROJECTS_DIR=$HOME/Developer
   LAST_PROJECT=''
-  BUILDERS=2                  # builder panes (solo and workshop)
-  MESSENGER=1                 # 1 = Haiku relay pane in solo mode (0 saves ~600MB)
-  MB_PER_AGENT=600            # memory budget per Claude session, used to cap builders
+  WORKERS=2                   # delegated peer sessions (haiku)
+  MB_PER_AGENT=600            # memory budget per agent session, used to cap workers
   MEM_RESERVE_MB=1536         # memory left free for macOS and your other apps
-  ROUTER_CMD=jev-claude       # used by builders when installed; blank to disable
-  ARCHITECT_MODEL=opus
-  BUILDER_MODEL=sonnet        # used when the router is not installed
-  MESSENGER_MODEL=haiku
-  WORKSHOP_MACHINE=''         # herdr machine name of the workshop, set on HQ
+  ARCHITECT_MODEL=opus        # Claude models
+  MAIN_MODEL=sonnet
+  WORKER_MODEL=haiku
+  CODEX_ARCHITECT_MODEL=gpt-6.1-sol   # Codex models (your ~/.codex/config.toml default)
+  CODEX_MAIN_MODEL=gpt-6.1-sol
+  CODEX_WORKER_MODEL=gpt-6.1-sol
+  TERMINAL_APP=auto
   SOUNDS=1
   # shellcheck source=/dev/null
   [ -f "$STUDIO_CONF" ] && . "$STUDIO_CONF"

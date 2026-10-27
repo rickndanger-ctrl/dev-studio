@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand-in for the herdr CLI, following the JSON shapes in herdr.dev/docs/agent-automation.
+# Stand-in for the herdr CLI. JSON shapes copied from real herdr 0.9.3 replies (2026-10-27).
 # Logs every call to $MOCK_LOG so tests can check what the studio asked Herdr to do.
 set -u
 : "${MOCK_STATE:?}" "${MOCK_LOG:?}"
@@ -21,14 +21,24 @@ case "$1 ${2:-}" in
     n=$(( $(count ws) + 1 )); label=''
     while [ $# -gt 0 ]; do [ "$1" = --label ] && label=$2; shift; done
     echo "ws w$n $label" >> "$MOCK_STATE"; echo "pane w$n:p1" >> "$MOCK_STATE"
-    jq -n --arg w "w$n" --arg l "$label" '{result: {workspace: {workspace_id: $w, label: $l}, tab: {}, root_pane: {pane_id: ($w + ":p1")}}}' ;;
+    jq -n --arg w "w$n" --arg l "$label" '{result: {workspace: {workspace_id: $w, label: $l}, tab: {tab_id: ($w + ":t1")}, root_pane: {pane_id: ($w + ":p1")}}}' ;;
+  "tab create")
+    ws=''; while [ $# -gt 0 ]; do [ "$1" = --workspace ] && ws=$2; shift; done
+    n=$(( $(grep -c "^pane $ws:" "$MOCK_STATE") + 1 )); t=$(( $(grep -c "^tab $ws:" "$MOCK_STATE") + 2 ))
+    echo "tab $ws:t$t" >> "$MOCK_STATE"; echo "pane $ws:p$n" >> "$MOCK_STATE"
+    jq -n --arg t "$ws:t$t" --arg p "$ws:p$n" '{result: {tab: {tab_id: $t}, root_pane: {pane_id: $p}}}' ;;
   "pane split")
     ws=${3%%:*}; n=$(( $(grep -c "^pane $ws:" "$MOCK_STATE") + 1 ))
     echo "pane $ws:p$n" >> "$MOCK_STATE"
     jq -n --arg p "$ws:p$n" '{result: {pane: {pane_id: $p}}}' ;;
-  "agent list")  # shape copied from a real herdr 0.9.3 reply (2026-10-27)
-    echo '{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"agent":"claude","agent_status":"working","name":"omac-architect","pane_id":"w1:p1","workspace_id":"w1"},{"agent":"claude","agent_status":"blocked","name":"omac-messenger","pane_id":"w1:p3","workspace_id":"w1"},{"agent":"claude","agent_status":"done","pane_id":"w2:p1","workspace_id":"w2"}]}}' ;;
+  "agent list")
+    echo '{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"agent":"claude","agent_status":"working","name":"omac-architect","pane_id":"w1:p2","workspace_id":"w1"},{"agent":"claude","agent_status":"blocked","name":"omac-main","pane_id":"w1:p4","workspace_id":"w1"},{"agent":"claude","agent_status":"idle","name":"omac-worker-1","pane_id":"w1:p5","workspace_id":"w1"},{"agent":"claude","agent_status":"done","pane_id":"w1:p6","workspace_id":"w1"}]}}' ;;
   "agent rename")
     jq -n --arg p "$3" --arg n "$4" '{result: {type: "agent_info", agent: {agent: "claude", agent_status: "idle", name: $n, pane_id: $p}}}' ;;
+  "agent prompt")
+    case $3 in
+      *blocked*) echo '{"error":{"code":"agent_blocked","message":"agent is blocked"}}' >&2; exit 1 ;;
+      *) jq -n --arg n "$3" '{result: {type: "ok", agent: $n}}' ;;
+    esac ;;
   *) echo '{"result":{}}' ;;
 esac

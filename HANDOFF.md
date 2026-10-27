@@ -1,93 +1,79 @@
-# Handoff: Dev Studio → Claude Code on Mini One
+# Handoff: Dev Studio → the next Claude Code session
 
-**Read `LESSONS.md` and `CLAUDE.md` first.** Then this file.
+**Read `LESSONS.md`, `CLAUDE.md` and `DESIGN.md` first.** Then this file.
 
 ## Who you're working with
 The owner is a creative lead, not a programmer. Explain things plainly, take over the
 technical work, and pick sensible defaults instead of asking lots of questions. Be honest
 about what is and isn't tested.
 
-## What Dev Studio is
-A Dock app that opens a ready-made team of Claude Code sessions for a project, inside
-[Herdr](https://herdr.dev) (a terminal multiplexer for coding agents):
+## What Dev Studio is (v2, 2026-10-27)
+A Dock app that opens a team of coding-agent sessions for a project inside Herdr, with a
+**board** that shows JEV routing every message between them (modelled on the
+"Claude Code cross-session" picture the owner gave us). See `DESIGN.md` for the shape.
 
-- 🏛 **Architect**: Opus, plans, delegates, and signs off before merges
-- 🔨 **Builders**: Sonnet, each in its own `--worktree`; launched through `jev-claude` when it's installed
-- ✨ **Dashboard**: `ui/dashboard.sh`, live agent status and free memory
-- 📣 **Messenger**: Haiku, optional (`MESSENGER=1`), off by default to save memory
-
-Sessions talk to each other with Claude Code's cross-session messaging (`/peers`,
-SendMessage). See `settings/peer.json` and
-https://code.claude.com/docs/en/cross-session-messaging.
-
-**Modes:** `solo` (default: the whole team on one Mac), plus `hq` / `workshop` (split
-across two Macs). The owner chose **solo on both Mac minis, run independently**, because
-memory is limited.
+- Tab **board**: `studio board` — architect card, main session, JEV decision bars, worker
+  cards, peer mailbox, session log. Read-only. Python, `ui/board.py`.
+- Tab **team**: the terminals: architect (Opus), main (Sonnet), workers (Haiku ×N), and the
+  router pane (`studio router`, a restart loop around `router/router.py`).
+- `studio up <project> --codex` builds the same team with Codex (`codex -m <model>`, role
+  brief as the first prompt). `AGENT_KIND` and models live in `~/.dev-studio/studio.conf`;
+  the team actually launched for a project is in `<project>/.studio/team.json`.
+- Agents talk only through `studio send <me> @peer|auto "note"`. The router asks Jev
+  (TypeSafe, `TYPESAFE_API_KEY` in `~/.zshrc`) which peer / what action / token leak, gates
+  on confidence, delivers with `herdr agent prompt`, and logs every step to
+  `<project>/.studio/router.log`. `ROUTER=jev|clef|rules`; Clef is a slot (`CLEF_URL`)
+  because nothing called Clef is installed and the owner has not said what starts it.
+- The sender of a message is verified against the Herdr pane it was sent from
+  (`HERDR_PANE_ID`); anything else is delivered marked UNVERIFIED.
 
 ## Where things stand
-- Repo: `rickndanger-ctrl/dev-studio`, branch `studio-v1`, draft PR #1.
-- Installed on Mini One at `~/dev-studio` via `./install.sh` (solo; `BUILDERS=3` in studio.conf,
-  capped by free memory at launch).
-- Matches the "Opus architects · Haiku relays · Sonnet executes" blueprint: the Haiku relay is on
-  by default (`MESSENGER=0` to save ~600MB), role briefs follow the split, and the dashboard is a
-  board (role cards, session log from `.studio/status.md`, peers footer).
-- Found on this Mac: `~/.local/bin/herdr`, `~/.local/bin/claude`, `/opt/homebrew/bin/jq`.
-  `jev-claude` is **not** installed.
-- **First Dock launch crashed:** `bin/studio: line 308: syntax error near unexpected token '('`.
-  Cause: bash 3.2 misparsed an AppleScript heredoc inside `$( )`. **Fixed in commit
-  `59963df`** (picker moved to `macos/pick-project.applescript`). Not yet confirmed on
-  the Mac.
+- Repo `rickndanger-ctrl/dev-studio`, branch `studio-v1`, draft PR #1. Installed on Mini One
+  at `~/dev-studio`; the Dock app runs `~/dev-studio/bin/studio` directly.
+- The studio runs in its own Herdr session (`herdr --session dev-studio`); the TUI client
+  gets a private `XDG_STATE_HOME` so it cannot reopen on the owner's saved SSH machine.
+- Verified for real on Mini One: a Claude team on this repo, a message sent by a worker,
+  judged by Jev (0.91 sharp), delivered to the main session, which then replied through the
+  same path; the board screenshot matches the picture. Codex: see the end of the launch log.
+- `test/run.sh` (51 checks) runs the studio against `test/mock-herdr` and a fake TypeSafe
+  endpoint (`test/fake-typesafe.py`). CI runs it on macOS bash 3.2.
+
+## Known limits / next ideas
+- One team per project at a time (Claude or Codex): both would share `<project>/.studio`.
+- The board is a terminal pane. The owner asked whether it "has to be Herdr": the plumbing
+  (pane states, `agent prompt` delivery) does; the board itself could become a browser page.
+- Jev's drop sensitivity is mild: polite acks get forwarded. Tune `DROP_P`/questions in
+  `router/router.py` with real traffic before changing anything else.
+- Clef: ask the owner what command starts it, then set `CLEF_URL` (System One-compatible).
 
 ## Do this first
 ```bash
 cd ~/dev-studio && git pull
-for f in bin/studio ui/dashboard.sh lib/common.sh install.sh macos/make-app.sh; do /bin/bash -n "$f" && echo "ok $f"; done
-PATH="/bin:$PATH" /bin/bash test/run.sh        # 27 checks, under the Mac's real bash 3.2
+for f in bin/studio lib/common.sh install.sh macos/make-app.sh; do /bin/bash -n "$f" && echo "ok $f"; done
+shellcheck -s bash bin/studio lib/common.sh test/run.sh test/mock-herdr
+PATH="/bin:$PATH" /bin/bash test/run.sh
 studio doctor
 ```
-Then click **Dev Studio** in the Dock (or run `STUDIO_GUI=1 studio up`) and watch
-`~/.dev-studio/logs/launch.log`.
-
-## Verified against real Herdr 0.9.3 (2026-10-27, Mini One)
-Checked with a throwaway workspace (`studio-probe`), then closed:
-
-1. **`workspace list`**: objects carry `.label` and `.workspace_id` — `find_workspace` is right.
-2. **`agent list`**: `{"agent":"claude","agent_status":"blocked","pane_id":"w3:p3",...}`.
-   The field is `agent_status` (not `status`), and `name` only appears after
-   `herdr agent rename <pane> <name>`, which `start_agent` now does once Herdr detects the
-   session. The dashboard and mock use the real shape.
-3. **`pane split --ratio`**: the share the ORIGINAL pane keeps. `split()` converts, so the
-   layouts still say "new pane's share".
-4. **Server start**: the server was already running (the TUI starts it); `ensure_server` is a fallback.
-5. **`pane run` right after a split**: works — the command ran and printed its output.
-6. **Terminal opener**: `macos/open-terminal.applescript` opens a 220x58 window titled
-   "Dev Studio" and sizes the TAB it created. The studio runs in its own Herdr session
-   (`herdr --session dev-studio`, `STUDIO_SESSION` in `lib/common.sh`) and the client gets a
-   private `XDG_STATE_HOME`, otherwise it opens on the last saved SSH machine (Mini 2).
-
-## Open questions for the owner
-- **Clef**: what command starts it? Its free tier runs locally. Set `ROUTER_CMD` in
-  `~/.dev-studio/studio.conf` (or change the default in `lib/common.sh`) so builders use it.
-- **RAM per Mini**: `MB_PER_AGENT=600` is a guess. Measure a real Claude session's
-  memory, for example `ps -o rss= -p <pid>`, and tune `MB_PER_AGENT` / `BUILDERS`.
 
 ## Rules for changes
 - Bash 3.2 only: no associative arrays, `mapfile`, `${var,,}`, or heredoc/`case`/apostrophes inside `$( )`.
-- `shellcheck` every script, `/bin/bash -n` on each one, then `test/run.sh`, before every commit.
-- Add a `LESSONS.md` entry for every mistake.
-- Push to `studio-v1`. CI (`.github/workflows/test.yml`) runs the tests on macOS bash 3.2.
-- Merge to `main` only when the owner confirms the Dock app works.
+- Python: standard library only (the Mac's own python3). Keep emoji out of the board (it pads by code point).
+- `shellcheck` every script, `/bin/bash -n` on each one, then `test/run.sh`, before every commit —
+  and gate the commit on the test's exit code, never on grep's.
+- Add a `LESSONS.md` entry for every mistake. Push to `studio-v1`. Merge to `main` only when the
+  owner confirms the Dock app works.
 
 ## File map
 | Path | What |
 |---|---|
-| `bin/studio` | main command: `up`, `dash`, `doctor`, `role`, `stop`; layouts; memory cap |
-| `lib/common.sh` | config defaults, colors, `mem_available_mb`, helpers |
-| `ui/dashboard.sh` | live dashboard pane |
-| `install.sh` | per-Mac installer |
-| `macos/make-app.sh` | builds `~/Applications/Dev Studio.app` and pins it to the Dock |
+| `bin/studio` | `up`, `board`, `router`, `send`, `ask`, `doctor`, `stop`; the layout; memory cap |
+| `lib/common.sh` | config defaults, `hd` (Herdr in the studio's session), helpers |
+| `router/router.py` | the JEV message router: mailbox → judgment → delivery → log |
+| `ui/board.py` | the board |
+| `roles/{architect,main,worker}.md` | role briefs (`<project>`, `<me>` get filled in; LESSONS.md appended) |
+| `settings/peer.json` | Claude cross-session inbound policy |
+| `macos/open-terminal.applescript` | the studio window (sized by the tab's tty) |
 | `macos/pick-project.applescript` | the "which project?" dialog |
-| `roles/*.md` | each agent's role brief (`<project>` gets filled in; LESSONS.md is appended) |
-| `settings/peer.json` | cross-session inbound policy |
-| `test/run.sh`, `test/mock-herdr` | end-to-end tests against a mock Herdr |
-| `~/.dev-studio/studio.conf` | per-Mac settings (role, builders, models, router, sounds) |
+| `test/run.sh`, `test/mock-herdr`, `test/fake-typesafe.py` | end-to-end tests |
+| `~/.dev-studio/studio.conf` | per-Mac settings (agent kind, router, workers, models, sounds) |
+| `<project>/.studio/` | mailbox, `peers.json`, `team.json`, `router.log` (kept out of git) |
