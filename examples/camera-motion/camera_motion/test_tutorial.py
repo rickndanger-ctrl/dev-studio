@@ -83,6 +83,23 @@ def wait_for_200(url, timeout=20.0):
     return None
 
 
+def probe_serve(cmd, cwd, env, url, timeout=20.0):
+    """Start cmd, wait for url to answer, then stop it. Returns (status, stderr text).
+
+    stderr goes to a temporary file, not a pipe, so a server that fails to start
+    leaves its reason behind for the failure message.
+    """
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as err:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=err)
+        try:
+            status = wait_for_200(url, timeout=timeout)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+        err.seek(0)
+        return status, err.read()
+
+
 def check_output(test, path_, text=None):
     """Check one generated file (or stdout text) by its type."""
     if path_.endswith(".svg"):
@@ -186,20 +203,45 @@ class TutorialTests(unittest.TestCase):
                         else:
                             args += ["--port", port]
                         cmd = [python, "-m", "camera_motion.cli"] + args
-                        proc = subprocess.Popen(cmd, cwd=home, env=env,
-                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        try:
-                            status = wait_for_200(f"http://127.0.0.1:{port}/")
-                            self.assertEqual(status, 200)
-                        finally:
-                            proc.terminate()
-                            proc.wait(timeout=10)
+                        status, stderr = probe_serve(cmd, home, env, f"http://127.0.0.1:{port}/")
+                        self.assertEqual(status, 200,
+                                         f"server did not answer 200; its stderr was:\n{stderr or '(empty)'}")
 
                     elif kind in ("activate", "pip", "venv"):
                         continue  # skipped unless CM_SLOW=1 (see module docstring)
 
                     else:
                         self.fail(f"unrecognised line: {line}")
+
+
+class ServeProbeTests(unittest.TestCase):
+    def test_a_server_that_fails_keeps_its_stderr(self):
+        failing = [sys.executable, "-c", "import sys; sys.stderr.write('boom: port busy\\n'); sys.exit(3)"]
+        with tempfile.TemporaryDirectory() as base:
+            status, stderr = probe_serve(failing, base, dict(os.environ),
+                                         "http://127.0.0.1:9/", timeout=1.0)
+        self.assertIsNone(status)
+        self.assertIn("boom: port busy", stderr)
+
+    def test_a_working_server_reports_200(self):
+        # The child uses the package's _Server, which skips the reverse-DNS lookup that
+        # the stock ThreadingHTTPServer makes (slow on macOS runners).
+        child = (
+            "import http.server, socket, sys\n"
+            "def no_lookup(*args, **kwargs):\n"
+            "    raise RuntimeError('socket.getfqdn called while binding')\n"
+            "socket.getfqdn = no_lookup\n"
+            "from camera_motion.web.server import _Server\n"
+            "port = int(sys.argv[1])\n"
+            "_Server(('127.0.0.1', port), http.server.SimpleHTTPRequestHandler).serve_forever()"
+        )
+        port = str(free_port())
+        serving = [sys.executable, "-c", child, port]
+        env = dict(os.environ, PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+        with tempfile.TemporaryDirectory() as base:
+            status, stderr = probe_serve(serving, base, env, f"http://127.0.0.1:{port}/", timeout=10.0)
+        self.assertEqual(status, 200)
+        self.assertNotIn("Traceback", stderr)
 
 
 if __name__ == "__main__":
