@@ -19,6 +19,17 @@ The team follows the cross-session blueprint, *Opus architects Â· Haiku relays Â
 
 `studio up --codex` builds the same team with Codex instead of Claude Code.
 
+**Codex sandbox grants.** A codex role can write to only what its sandbox allows, so the Studio
+opens exactly these folders to it, nothing else:
+
+- every codex role: the mailbox outbox (`<project>/.studio/mail/outbox`), so `studio send` works;
+- a codex worker also: its project's git objects, refs and logs, and its worktree's own git
+  directory (`<project>/.git/worktrees/<name>`), so it can add, commit, reset and create branches.
+
+Never the `.git` root, `hooks/`, `config`, `info/` or `packed-refs`. Verified with the real codex
+0.164 sandbox: add, commit, reset and branch create work. Branch and tag delete still prompt (they
+need `.git/packed-refs.lock`). Commit and reset print a harmless `packed-refs.lock` warning.
+
 **Built for Macs with limited memory.** Before starting, the Studio checks how much memory
 is free and starts fewer workers if they wouldn't fit. Built on [Herdr](https://herdr.dev),
 which keeps every agent running in the background and tells the board who is working, done,

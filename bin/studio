@@ -157,9 +157,18 @@ ensure_worktree() { # project-dir name
   [ -d "$dir" ] && git -C "$1" rev-parse --verify -q "$branch" >/dev/null 2>&1
 }
 
+# " --add-dir <real path>" for a path whose real location (pwd -P) lies strictly inside
+# <root>/, or nothing. The root itself is never granted, and neither is anything outside it.
+grant_under() { # root path
+  local p
+  [ -n "$2" ] || return 0   # cd "" would succeed and name the current folder
+  p=$(cd "$2" 2>/dev/null && pwd -P) || return 0
+  case $p in "$1"/*) printf ' --add-dir %s' "$(printf %q "$p")" ;; esac
+}
+
 # start_agent pane label role name model kind [worktree]
 start_agent() {
-  local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir sandbox='' adds='' real_project='' outbox=''
+  local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir sandbox='' adds='' real_project='' outbox='' common='' wd=''
   brief=$(role_file "$role" "$name")
   if [ "$kind" = codex ]; then
     # Codex has no system-prompt flag: the role brief is its first prompt. A codex worker
@@ -185,6 +194,27 @@ start_agent() {
     else
       adds=''
       warn "Not granting $name the outbox: $STUDIO_DIR/mail/outbox does not resolve inside the project."
+    fi
+    # A codex worker commits in its own worktree, so the sandbox also gets the git pieces a
+    # commit writes: <common>/objects, <common>/refs, <common>/logs and the worktree's own git
+    # directory (<common>/worktrees/<name>). Never the .git root, hooks, config, info or
+    # packed-refs. Every path is resolved with pwd -P and kept only if it is inside
+    # <project>/.git. Verified with the real codex 0.164 sandbox: add, commit, reset and branch
+    # create work with this grant. Branch and tag delete still prompt (they need
+    # .git/packed-refs.lock). commit and reset print a harmless packed-refs.lock warning.
+    if [ -n "$worktree" ] && [ -n "$real_project" ]; then
+      common=$(cd "$PROJECT_DIR" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || common=''
+      case $common in ''|/*) ;; *) common="$PROJECT_DIR/$common" ;; esac
+      [ -n "$common" ] && common=$(cd "$common" 2>/dev/null && pwd -P) || common=''
+      if [ -n "$common" ] && [ "$common" = "$real_project/.git" ]; then
+        mkdir -p "$common/objects" "$common/refs" "$common/logs" 2>/dev/null
+        adds="$adds$(grant_under "$common" "$common/objects")"
+        adds="$adds$(grant_under "$common" "$common/refs")"
+        adds="$adds$(grant_under "$common" "$common/logs")"
+        wd=$(cd "$dir" 2>/dev/null && git rev-parse --git-dir 2>/dev/null) || wd=''
+        case $wd in ''|/*) ;; *) wd="$dir/$wd" ;; esac
+        adds="$adds$(grant_under "$common" "$wd")"
+      fi
     fi
     cmd="cd $(printf %q "$dir") && codex -m $model $sandbox$adds $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
   else

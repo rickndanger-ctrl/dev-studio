@@ -107,6 +107,22 @@ check "codex worker-2 gets the outbox"       sh -c "grep -F 'omac-worker-2.md' '
 check "codex architect has only the outbox"  sh -c "test \$(grep -F 'omac-architect.md' '$MOCK_LOG' | grep -o -- '--add-dir' | wc -l) = 1"
 check "codex main has only the outbox"       sh -c "test \$(grep -F 'omac-main.md' '$MOCK_LOG' | grep -o -- '--add-dir' | wc -l) = 1"
 check "add-dir paths are absolute"           sh -c "! grep -E -- \"--add-dir '?[^/']\" '$MOCK_LOG'"
+# The exact grant list per codex role: the outbox, and for workers objects, refs, logs and
+# the worktree's own git dir. Never the .git root, hooks, config, info or packed-refs.
+add_dirs_of() { grep -F "$1" "$MOCK_LOG" | head -1 | grep -o -- '--add-dir [^ ]*' | sed 's/^--add-dir //'; }
+OMAC_REAL=$(cd "$PROJECT" && pwd -P)
+check "architect gets exactly the outbox"    test "$(add_dirs_of 'omac-architect.md')" = "$OMAC_REAL/.studio/mail/outbox"
+check "main gets exactly the outbox"         test "$(add_dirs_of 'omac-main.md')" = "$OMAC_REAL/.studio/mail/outbox"
+check "worker-1 gets its exact grant list"   test "$(add_dirs_of 'omac-worker-1.md')" = "$OMAC_REAL/.studio/mail/outbox
+$OMAC_REAL/.git/objects
+$OMAC_REAL/.git/refs
+$OMAC_REAL/.git/logs
+$OMAC_REAL/.git/worktrees/worker-1"
+check "worker-2 gets its exact grant list"   test "$(add_dirs_of 'omac-worker-2.md')" = "$OMAC_REAL/.studio/mail/outbox
+$OMAC_REAL/.git/objects
+$OMAC_REAL/.git/refs
+$OMAC_REAL/.git/logs
+$OMAC_REAL/.git/worktrees/worker-2"
 
 echo "Mixed team: codex worker-1, claude worker-2"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
@@ -180,6 +196,7 @@ printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "Spaced Repo" --no-attach --codex
 check "outbox path is shell-quoted"         grep -qF 'Spaced\ Repo/.studio/mail/outbox' "$MOCK_LOG"
 check "worker worktree path is shell-quoted" grep -qF 'Spaced\ Repo/.claude/worktrees/worker-1' "$MOCK_LOG"
+check "git paths are shell-quoted"          grep -qF 'Spaced\ Repo/.git/objects' "$MOCK_LOG"
 
 echo "A project reached through a symlink gets its real path in the grants"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
@@ -191,6 +208,12 @@ printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up "$HOME/Developer/Linked" --no-attach --codex
 check "outbox grant uses the real path"      grep -qF -- "--add-dir $REAL/.studio/mail/outbox" "$MOCK_LOG"
 check "no grant uses the symlink path"       sh -c "! grep -qF -- '--add-dir $HOME/Developer/Linked' '$MOCK_LOG'"
+check "symlinked worker-1 gets its real grant list" test "$(add_dirs_of 'linked-worker-1.md')" = "$REAL/.studio/mail/outbox
+$REAL/.git/objects
+$REAL/.git/refs
+$REAL/.git/logs
+$REAL/.git/worktrees/worker-1"
+check "symlinked architect gets only the outbox" test "$(add_dirs_of 'linked-architect.md')" = "$REAL/.studio/mail/outbox"
 
 echo "An outbox that resolves outside the project gets no grant"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
