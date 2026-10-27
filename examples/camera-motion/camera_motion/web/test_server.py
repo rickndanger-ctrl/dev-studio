@@ -1,13 +1,18 @@
+import contextlib
 import http.client
+import io
 import json
 import os
 import socket
+import tempfile
 import threading
 import unittest
 import xml.etree.ElementTree as ET
 from unittest import mock
 
 from camera_motion.export.formats import parse_re10k
+from camera_motion.web import server as server_module
+from camera_motion.web.serve import serve
 from camera_motion.web.server import Viewer, make_server
 
 STUB_HELP = {
@@ -210,6 +215,11 @@ class ServerTests(unittest.TestCase):
         self.assertNotEqual(default[-1]["position"], longer[-1]["position"])
         self.assertNotEqual(default[-1]["position"][2], longer[-1]["position"][2])
 
+    def test_subject_distance_override_is_accepted(self):
+        status, ctype, _, body = self.get("/api/path/dolly_zoom_in?subject_distance=2.5")
+        self.assertEqual((status, ctype), (200, JSON))
+        self.assertEqual(len(json.loads(body)["frames"]), FRAMES_3S)
+
     def test_seconds_and_fps_override_frame_count(self):
         data = json.loads(self.get("/api/path/dolly_in?seconds=1&fps=10")[3])
         self.assertEqual(data["fps"], 10)
@@ -231,7 +241,7 @@ class ServerTests(unittest.TestCase):
         bad = [
             "distance=abc", "distance=inf", "distance=nan", "distance=",
             "radius=0", "radius=-1",
-            "fov_end=0", "fov_end=180",
+            "subject_distance=0", "subject_distance=-1", "subject_distance=abc",
             "seconds=0.1", "seconds=20",
             "fps=0", "fps=61", "fps=1.5", "fps=abc",
             "axis=y", "easing=bounce",
@@ -263,21 +273,128 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
 
 
-class BindTests(unittest.TestCase):
-    """Binding must not look up the machine's full name: that reverse-DNS lookup is slow on macOS CI."""
+class PortInUseTests(unittest.TestCase):
+    def test_serve_reports_a_busy_port_and_exits_1(self):
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(holder.close)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = serve(port)
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: port {port} is in use; try --port {port + 1}", err.getvalue())
 
-    def test_make_server_does_not_call_getfqdn(self):
-        def no_lookup(*args, **kwargs):
-            raise AssertionError("socket.getfqdn was called while binding")
 
-        with mock.patch.object(socket, "getfqdn", side_effect=no_lookup):
-            httpd = make_server(Viewer(app_html=APP, index_html=LIVE, help_data=STUB_HELP), port=0)
+class ValidationTests(unittest.TestCase):
+    """Merged presets are validated against schema.json: the schema sets the bounds."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer(app_html=APP, index_html=LIVE, help_data=STUB_HELP)
+        cls.httpd = make_server(cls.viewer, port=0)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def status_of(self, raw_path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
-            self.assertEqual(httpd.server_address[0], "127.0.0.1")
-            self.assertEqual(httpd.server_name, "127.0.0.1")
-            self.assertEqual(httpd.server_port, httpd.server_address[1])
+            conn.request("GET", raw_path)
+            resp = conn.getresponse()
+            return resp.status, json.loads(resp.read())
         finally:
+            conn.close()
+
+    def test_zero_distance_is_400(self):
+        status, body = self.status_of("/api/path/dolly_in?distance=0")
+        self.assertEqual(status, 400)
+        self.assertIn("error", body)
+        self.assertTrue(body["error"].startswith("params"), body["error"])
+
+    def test_angle_on_a_dolly_is_400(self):
+        status, _ = self.status_of("/api/path/dolly_in?angle=10")
+        self.assertEqual(status, 400)
+
+    def test_subject_distance_on_a_dolly_is_400(self):
+        status, _ = self.status_of("/api/path/dolly_in?subject_distance=2")
+        self.assertEqual(status, 400)
+
+    def test_valid_override_is_still_200(self):
+        status, _ = self.status_of("/api/path/dolly_in?distance=2")
+        self.assertEqual(status, 200)
+
+
+class UnexpectedErrorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer(app_html=APP, index_html=LIVE, help_data=STUB_HELP)
+        cls.httpd = make_server(cls.viewer, port=0)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def test_unexpected_error_is_500_json_with_traceback_logged(self):
+        err = io.StringIO()
+        with mock.patch.object(server_module, "path", side_effect=RuntimeError("boom")), \
+                contextlib.redirect_stderr(err):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            try:
+                conn.request("GET", "/api/path/dolly_in")
+                resp = conn.getresponse()
+                status, ctype, body = resp.status, resp.getheader("Content-Type"), resp.read()
+            finally:
+                conn.close()
+        self.assertEqual((status, ctype), (500, JSON))
+        self.assertIn("error", json.loads(body))
+        self.assertIn("RuntimeError: boom", err.getvalue())
+
+
+class ObjectFormCatalogTests(unittest.TestCase):
+    def test_viewer_accepts_the_object_form_catalog(self):
+        package = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        catalog_path = os.path.join(package, "presets", "catalog.json")
+        with open(catalog_path, encoding="utf-8") as f:
+            presets = json.load(f)
+        with tempfile.TemporaryDirectory() as tmp:
+            object_form = os.path.join(tmp, "catalog.json")
+            with open(object_form, "w", encoding="utf-8") as f:
+                json.dump({"presets": presets}, f)
+            viewer = Viewer(catalog_path=object_form, app_html=APP, index_html=LIVE, help_data=STUB_HELP)
+        self.assertEqual(len(viewer.presets), 14)
+
+
+class NoReverseDnsTests(unittest.TestCase):
+    def test_binds_and_answers_without_reverse_dns(self):
+        viewer = Viewer(app_html=APP, index_html=LIVE, help_data=STUB_HELP)
+        with mock.patch.object(socket, "getfqdn", side_effect=AssertionError("reverse DNS was used")):
+            httpd = make_server(viewer, 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+            try:
+                conn.request("GET", "/")
+                self.assertEqual(conn.getresponse().status, 200)
+            finally:
+                conn.close()
+        finally:
+            httpd.shutdown()
             httpd.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

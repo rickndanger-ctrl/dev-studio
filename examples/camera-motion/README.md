@@ -20,7 +20,9 @@ Python 3.9 or newer; no other dependencies.
 
     git clone <repo-url>
     cd dev-studio/examples/camera-motion
-    python3 -m venv .venv && . .venv/bin/activate && pip install .
+    python3 -m venv ~/venvs/camera-motion
+    . ~/venvs/camera-motion/bin/activate
+    pip install .
     camera-motion doctor    # every line should start with PASS
 
 Release notes are in [CHANGELOG.md](CHANGELOG.md). A step-by-step walkthrough is in
@@ -99,7 +101,18 @@ A sequence chains presets into one shot. Three samples are bundled: `establishin
 
 ## Tests
 
-    cd camera-motion && python3 -W error -m unittest
+Run from the folder that contains pyproject.toml:
+
+    python3 -W error -m unittest
+
+## Troubleshooting
+
+- **`camera-motion: command not found`**: activate the environment again with
+  `. ~/venvs/camera-motion/bin/activate`.
+- **`camera-motion serve` says `error: port N is in use`**: start it on another port, for example
+  `camera-motion serve --port 8791`.
+- **Check you reached the right page**: the browser tab is titled 'Camera motion'.
+- **`camera-motion doctor` prints a FAIL line**: the line names the broken part; reinstall with `pip install .`.
 
 ## License
 

@@ -87,6 +87,13 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(main(SAMPLE, out), out)
         self.assertTrue(os.path.isfile(out))
 
+    def test_build_accepts_the_object_form_catalog(self):
+        object_form = os.path.join(self.tmp, "object_form.json")
+        with open(object_form, "w", encoding="utf-8") as f:
+            json.dump({"presets": self.presets}, f)
+        doc = build(object_form)
+        self.assertEqual(set(doc), {preset["id"] for preset in self.presets})
+
 
 if __name__ == "__main__":
     unittest.main()

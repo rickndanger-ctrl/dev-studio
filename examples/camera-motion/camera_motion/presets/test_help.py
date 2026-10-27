@@ -1,7 +1,10 @@
 import json
 import os
 import re
+import tempfile
 import unittest
+
+from camera_motion.presets import load_help
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOG = os.path.join(HERE, "catalog.json")
@@ -60,6 +63,31 @@ class HelpTests(unittest.TestCase):
                 feel = self.help[preset_id]["feel"].lower()
                 with self.subTest(id=preset_id):
                     self.assertRegex(feel, rf"\b{word}\b")
+
+    def test_numbers_in_help_match_the_preset_params(self):
+        presets = {p["id"]: p for p in _load(CATALOG)}
+        words = {"one": 1, "two": 2}
+        for preset_id, entry in self.help.items():
+            params = presets[preset_id]["params"]
+            text = " ".join(entry[key] for key in KEYS).lower()
+            with self.subTest(id=preset_id):
+                for number in re.findall(r"(\d+) degrees", text):
+                    self.assertEqual(abs(params["angle"]), int(number), text)
+                for word in re.findall(r"\b(one|two) units?\b", text):
+                    self.assertEqual(abs(params["distance"]), words[word], text)
+                if re.search(r"an eighth of a (?:full )?circle", text):
+                    self.assertEqual(abs(params["angle"]), 360 / 8, text)
+
+    def test_load_help_names_the_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "help.json")
+            with self.assertRaises(FileNotFoundError) as caught:
+                load_help(missing)
+        self.assertIn(missing, str(caught.exception))
+        self.assertIn("help file not found", str(caught.exception))
+
+    def test_load_help_reads_the_bundled_file(self):
+        self.assertEqual(load_help(), self.help)
 
 
 if __name__ == "__main__":

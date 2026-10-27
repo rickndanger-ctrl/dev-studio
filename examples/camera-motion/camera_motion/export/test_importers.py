@@ -160,5 +160,73 @@ class MalformedTests(unittest.TestCase):
             read_gltf(doc)
 
 
+class EvenSpacingImportTests(unittest.TestCase):
+    """A timestamp shifted on one frame must be rejected before fps is inferred."""
+
+    def _frames(self):
+        return path({"type": "dolly", "params": {"distance": 1.0, "axis": "z"}, "easing": "linear"},
+                    duration_s=3.0, fps=FPS)
+
+    def test_re10k_shifted_timestamp_is_rejected(self):
+        lines = to_realestate10k(self._frames(), fps=FPS)
+        parts = lines[6].split()  # line 0 is the header, so line 6 is frame 5
+        parts[0] = str(int(parts[0]) + 10000)
+        lines[6] = " ".join(parts)
+        with self.assertRaisesRegex(ValueError, r"not evenly spaced \(frame 5\)"):
+            read_re10k(lines)
+
+    def test_json_shifted_timestamp_is_rejected(self):
+        doc = to_json(self._frames(), fps=FPS)
+        doc["frames"][5]["t"] += 0.01
+        with self.assertRaisesRegex(ValueError, r"not evenly spaced \(frame 5\)"):
+            read_json(doc)
+
+    def test_gltf_shifted_timestamp_is_rejected(self):
+        frames = self._frames()
+        frames[5] = dict(frames[5], t=frames[5]["t"] + 0.01)
+        doc = json.loads(json.dumps(to_gltf(frames, fps=FPS)))
+        with self.assertRaisesRegex(ValueError, r"not evenly spaced \(frame 5\)"):
+            read_gltf(doc)
+
+
+class GltfShapeTests(unittest.TestCase):
+    """Broken glTF must raise ValueError naming the field or the index, never KeyError/IndexError."""
+
+    def _doc(self):
+        frames = path({"type": "dolly", "params": {"distance": 1.0, "axis": "z"}, "easing": "linear"},
+                      duration_s=1.0, fps=FPS)
+        return json.loads(json.dumps(to_gltf(frames, fps=FPS)))
+
+    def test_accessor_without_buffer_view_names_the_field(self):
+        doc = self._doc()
+        del doc["accessors"][1]["bufferView"]
+        with self.assertRaisesRegex(ValueError, "accessor 1 is missing 'bufferView'"):
+            read_gltf(doc)
+
+    def test_buffer_view_index_out_of_range_names_the_index(self):
+        doc = self._doc()
+        doc["accessors"][1]["bufferView"] = 99
+        with self.assertRaisesRegex(ValueError, "bufferViews index 99 is out of range"):
+            read_gltf(doc)
+
+    def test_sampler_index_out_of_range_names_the_index(self):
+        doc = self._doc()
+        doc["animations"][0]["channels"][0]["sampler"] = 7
+        with self.assertRaisesRegex(ValueError, "samplers index 7 is out of range"):
+            read_gltf(doc)
+
+    def test_channel_without_target_names_the_field(self):
+        doc = self._doc()
+        del doc["animations"][0]["channels"][0]["target"]
+        with self.assertRaisesRegex(ValueError, "channel is missing 'target'"):
+            read_gltf(doc)
+
+    def test_node_index_out_of_range_names_the_index(self):
+        doc = self._doc()
+        doc["animations"][0]["channels"][0]["target"]["node"] = 5
+        with self.assertRaisesRegex(ValueError, "nodes index 5 is out of range"):
+            read_gltf(doc)
+
+
 if __name__ == "__main__":
     unittest.main()

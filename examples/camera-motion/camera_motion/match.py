@@ -7,27 +7,17 @@ count, then scored frame by frame against the input:
 
 Positions are scene units, rotation errors are degrees wrapped to +-180 (per yaw, pitch
 and roll), fov errors are degrees. Lower is better.
+
+Frames are paired by index, so the input must be evenly spaced in time: every gap must
+match the inferred fps to within 1e-3 (relative), or match() raises ValueError.
 """
-import json
 import math
-import os
 
 from camera_motion.engine.camera_path import path
+from camera_motion.export.importers import check_even_spacing
+from camera_motion.presets import load_catalog
 
-PACKAGE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CATALOG = os.path.join(PACKAGE, "presets", "catalog.json")
 ANGLE_SCALE = 45.0
-
-
-def _presets(catalog):
-    if catalog is None:
-        catalog = DEFAULT_CATALOG
-    if isinstance(catalog, str):
-        with open(catalog, encoding="utf-8") as f:
-            catalog = json.load(f)
-    if isinstance(catalog, dict):
-        catalog = catalog["presets"]
-    return catalog
 
 
 def _wrap(degrees):
@@ -68,10 +58,11 @@ def match(frames, catalog=None, top=3, fov_track=True):
     if duration <= 0:
         raise ValueError("frames must span a positive duration")
     fps = (n - 1) / duration
+    check_even_spacing([f["t"] for f in frames])
     start = _start_pose(frames[0])
 
     scored = []
-    for preset in _presets(catalog):
+    for preset in load_catalog(catalog):
         candidate = path(preset, duration_s=duration, fps=fps, start=start)
         if len(candidate) != n:
             raise ValueError(f"preset {preset['id']!r} gave {len(candidate)} frames, expected {n}")

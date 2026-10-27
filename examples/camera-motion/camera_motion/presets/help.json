@@ -16,12 +16,12 @@
     "feel": "The viewer feels a short glide to the right, about one unit of travel."
   },
   "dolly_zoom_in": {
-    "when": "Use it to keep the subject roughly framed while the background stretches away.",
-    "feel": "The camera moves in as the lens widens, so the background seems to pull away."
+    "when": "Use it to keep the subject the same size while the background stretches away.",
+    "feel": "The camera moves in as the lens gets wider, so the background seems to pull away."
   },
   "dolly_zoom_out": {
-    "when": "Use it to keep the subject roughly framed while the background moves closer.",
-    "feel": "The camera pulls back as the lens narrows, so the background looks flatter."
+    "when": "Use it to keep the subject the same size while the background crowds in.",
+    "feel": "The camera pulls back as the lens gets narrower, so the background crowds in."
   },
   "crane_up": {
     "when": "Use it to reveal more of a scene by rising above a subject.",

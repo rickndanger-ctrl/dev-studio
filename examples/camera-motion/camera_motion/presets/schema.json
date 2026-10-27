@@ -3,7 +3,7 @@
   "$id": "camera-motion/presets/schema.json",
   "title": "Camera motion preset",
   "description": "One camera-motion preset in the shared format consumed by the engine.",
-  "$comment": "Sign conventions (matching the engine): dolly z positive = forward toward the subject; dolly x positive = right; crane positive = up; dolly_zoom distance positive = in; fov_end is the lens field of view at the end of the move (wider = larger); orbit angle positive = camera travels to its right (counter-clockwise seen from above), negative = left; pan angle positive = yaw left; tilt angle positive = pitch up. Every move must actually move: distance and angle may not be 0.",
+  "$comment": "Sign conventions (matching the engine): dolly z positive = forward toward the subject; dolly x positive = right; crane positive = up; dolly_zoom distance positive = in, and the field of view follows the distance so the subject at the look-at point stays put (fov_end is deprecated and ignored); orbit angle positive = camera travels to its right (counter-clockwise seen from above), negative = left; pan angle positive = yaw left; tilt angle positive = pitch up. Every move must actually move: distance and angle may not be 0.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "name", "type", "params", "easing", "description"],
@@ -30,10 +30,13 @@
     {
       "if": {"properties": {"type": {"const": "dolly_zoom"}}},
       "then": {"properties": {"params": {
-        "type": "object", "additionalProperties": false, "required": ["distance", "fov_end"],
+        "type": "object", "additionalProperties": false, "required": ["distance"],
         "properties": {
           "distance": {"type": "number", "minimum": -50, "maximum": 50, "not": {"const": 0}},
-          "fov_end": {"type": "number", "minimum": 10, "maximum": 150},
+          "fov_end": {"type": "number", "minimum": 10, "maximum": 150,
+                      "description": "Deprecated and ignored: the field of view follows the distance."},
+          "subject_distance": {"type": "number", "exclusiveMinimum": 0,
+                               "description": "Distance from the camera to the subject at the start of the move. Defaults to the start distance."},
           "frame": {"enum": ["world", "camera"]}
         }
       }}}

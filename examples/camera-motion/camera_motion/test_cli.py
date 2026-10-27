@@ -1,7 +1,9 @@
+import argparse
 import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -214,8 +216,9 @@ class ImportMatchTests(unittest.TestCase):
         code, out, err = _run(["match", target])
         self.assertEqual(code, 0, err)
         lines = out.splitlines()
-        self.assertEqual(len(lines), 3)
-        self.assertTrue(lines[0].startswith("tilt_up  "), lines[0])
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0], "preset  score (lower = closer)")
+        self.assertTrue(lines[1].startswith("tilt_up  "), lines[1])
 
     def test_gltf_dolly_zoom_ties_with_dolly_and_prints_note(self):
         source = os.path.join(self.dir, "dolly_zoom_in.gltf")
@@ -225,7 +228,8 @@ class ImportMatchTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         lines = out.splitlines()
         self.assertEqual(lines[-1], "note: glTF has no zoom track; dolly and dolly_zoom look the same")
-        top = lines[:-1]
+        self.assertEqual(lines[0], "preset  score (lower = closer)", out)
+        top = lines[1:-1]
         self.assertEqual(len(top), 3, out)
         self.assertEqual({line.split()[0] for line in top[:2]}, {"dolly_in", "dolly_zoom_in"}, out)
         self.assertEqual(top[0].split()[-1], top[1].split()[-1], out)
@@ -331,6 +335,92 @@ class SequenceCliTests(unittest.TestCase):
         code, _, err = _run(["sequence", _sample_ids()[0], "--export", "json"])
         self.assertEqual(code, 1)
         self.assertIn("-o/--out", err)
+
+
+class ShiftedTimestampCliTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.target = os.path.join(self.dir, "shifted.txt")
+        code, _, err = _run(["export", "tilt_up", "--format", "re10k", "-o", self.target])
+        self.assertEqual(code, 0, err)
+        with open(self.target, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        parts = lines[6].split()  # line 0 is the header, so line 6 is frame 5
+        parts[0] = str(int(parts[0]) + 10000)
+        lines[6] = " ".join(parts)
+        with open(self.target, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_import_exits_1_for_a_shifted_timestamp(self):
+        out_file = os.path.join(self.dir, "imported.json")
+        code, out, err = _run(["import", self.target, "-o", out_file])
+        self.assertEqual(code, 1)
+        self.assertEqual(err.strip(), "error: timestamps are not evenly spaced (frame 5)")
+        self.assertFalse(os.path.exists(out_file))
+
+    def test_match_prints_nothing_on_stdout_for_a_shifted_timestamp(self):
+        code, out, err = _run(["match", self.target])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err.strip(), "error: timestamps are not evenly spaced (frame 5)")
+
+
+class ArgumentAndErrorTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+
+    def test_export_rejects_non_positive_numbers(self):
+        out = os.path.join(self.dir, "x.json")
+        for extra in (["--fps", "0"], ["--fps", "-3"], ["--fps", "1.5"], ["--width", "0"],
+                      ["--height", "abc"], ["--seconds", "0"], ["--seconds", "-1"]):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        main(["export", "dolly_in", "--format", "json", "-o", out] + extra)
+                self.assertEqual(caught.exception.code, 2)
+
+    def test_unexpected_key_error_is_one_line_and_exit_1(self):
+        with mock.patch("camera_motion.cli.camera_path", side_effect=KeyError("bufferView")):
+            code, out, err = _run(["path", "dolly_in"])
+        self.assertEqual(code, 1)
+        lines = [line for line in err.splitlines() if line]
+        self.assertEqual(len(lines), 1, err)
+        self.assertTrue(lines[0].startswith("error:"), err)
+        self.assertIn("bufferView", lines[0])
+
+    def test_value_error_is_one_line_and_exit_1(self):
+        with mock.patch("camera_motion.cli.camera_path", side_effect=ValueError("bad frames")):
+            code, _, err = _run(["path", "dolly_in"])
+        self.assertEqual(code, 1)
+        self.assertEqual(err.strip(), "error: bad frames")
+
+    def test_debug_reraises_the_error(self):
+        with mock.patch("camera_motion.cli.camera_path", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                main(["--debug", "path", "dolly_in"])
+
+    def test_list_accepts_the_object_catalog_form(self):
+        with open(CATALOG, encoding="utf-8") as f:
+            presets = json.load(f)
+        target = os.path.join(self.dir, "object_catalog.json")
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump({"presets": presets}, f)
+        code, out, err = _run(["list", "--catalog", target])
+        self.assertEqual(code, 0, err)
+        ids = {line.split("\t")[0] for line in out.splitlines() if line}
+        self.assertEqual(ids, ALL_IDS)
+
+    def test_docstring_lists_every_subcommand(self):
+        import camera_motion.cli as cli
+
+        parser = cli._build_parser()
+        subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        documented = set(re.findall(r"^  ([a-z]+)\b", cli.__doc__, re.M))
+        self.assertEqual(documented, set(subparsers.choices))
 
 
 if __name__ == "__main__":

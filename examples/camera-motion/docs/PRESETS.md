@@ -16,8 +16,8 @@ The sign conventions below were answered by the engine studio in `engine/SUMMARY
 | `dolly_out` | Dolly Out | `dolly` | 73 | pos (0.000, 0.000, 6.000) rot (0.000, 0.000, 0.000) | 50.000 |
 | `dolly_left` | Dolly Left | `dolly` | 73 | pos (-1.000, 0.000, 5.000) rot (0.000, 0.000, 0.000) | 50.000 |
 | `dolly_right` | Dolly Right | `dolly` | 73 | pos (1.000, 0.000, 5.000) rot (0.000, 0.000, 0.000) | 50.000 |
-| `dolly_zoom_in` | Dolly Zoom In | `dolly_zoom` | 73 | pos (0.000, 0.000, 4.000) rot (0.000, 0.000, 0.000) | 75.000 |
-| `dolly_zoom_out` | Dolly Zoom Out | `dolly_zoom` | 73 | pos (0.000, 0.000, 6.000) rot (0.000, 0.000, 0.000) | 35.000 |
+| `dolly_zoom_in` | Dolly Zoom In | `dolly_zoom` | 73 | pos (0.000, 0.000, 4.000) rot (0.000, 0.000, 0.000) | 60.474 |
+| `dolly_zoom_out` | Dolly Zoom Out | `dolly_zoom` | 73 | pos (0.000, 0.000, 6.000) rot (0.000, 0.000, 0.000) | 42.471 |
 | `crane_up` | Crane Up | `crane` | 73 | pos (0.000, 1.000, 5.000) rot (0.000, 0.000, 0.000) | 50.000 |
 | `crane_down` | Crane Down | `crane` | 73 | pos (0.000, -1.000, 5.000) rot (0.000, 0.000, 0.000) | 50.000 |
 | `orbit_left` | Orbit Left | `orbit` | 73 | pos (-3.536, 0.000, 3.536) rot (-45.000, 0.000, 0.000) | 50.000 |
@@ -87,12 +87,11 @@ Camera moves in while the lens widens to a wider field of view.
 
 - Type: `dolly_zoom`
 - Easing: `ease_in_out` (starts and ends slowly)
-- End pose: pos (0.000, 0.000, 4.000) rot (0.000, 0.000, 0.000), end fov 75.000
+- End pose: pos (0.000, 0.000, 4.000) rot (0.000, 0.000, 0.000), end fov 60.474
 
 | Parameter | Value | Units | Sign / meaning |
 |---|---|---|---|
 | `distance` | 1.0 | scene units | positive = in, the camera moves forward toward the subject |
-| `fov_end` | 75 | degrees | lens field of view at the end of the move; larger = wider lens |
 
 ### `dolly_zoom_out` - Dolly Zoom Out
 
@@ -100,12 +99,11 @@ Camera moves back while the lens narrows to a tighter field of view.
 
 - Type: `dolly_zoom`
 - Easing: `ease_in_out` (starts and ends slowly)
-- End pose: pos (0.000, 0.000, 6.000) rot (0.000, 0.000, 0.000), end fov 35.000
+- End pose: pos (0.000, 0.000, 6.000) rot (0.000, 0.000, 0.000), end fov 42.471
 
 | Parameter | Value | Units | Sign / meaning |
 |---|---|---|---|
 | `distance` | -1.0 | scene units | positive = in, the camera moves forward toward the subject |
-| `fov_end` | 35 | degrees | lens field of view at the end of the move; larger = wider lens |
 
 ### `crane_up` - Crane Up
 

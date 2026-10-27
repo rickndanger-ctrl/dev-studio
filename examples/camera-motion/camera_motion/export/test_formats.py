@@ -1,7 +1,12 @@
+import contextlib
+import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from camera_motion.engine.camera_path import path
 from camera_motion.export.formats import main, parse_re10k, to_json, to_realestate10k
@@ -92,6 +97,43 @@ class CliTests(unittest.TestCase):
             with open(out_path) as f:
                 data = json.load(f)
             self.assertEqual(len(data["frames"]), round(1.5 * 10) + 1)
+
+
+class FormatsMainDelegatesTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.preset_file = os.path.join(self.dir, "preset.json")
+        with open(self.preset_file, "w", encoding="utf-8") as f:
+            json.dump(PRESET, f)
+
+    def test_main_calls_the_cli_export_command(self):
+        out = os.path.join(self.dir, "out.json")
+        with mock.patch("camera_motion.cli.main", return_value=0) as cli_main:
+            self.assertEqual(main([self.preset_file, "--format", "json", "-o", out, "--fps", "10"]), 0)
+        argv = cli_main.call_args[0][0]
+        self.assertEqual(argv[0], "export")
+        self.assertEqual(argv[1], self.preset_file)
+        self.assertEqual(argv[argv.index("--format") + 1], "json")
+        self.assertEqual(argv[argv.index("-o") + 1], out)
+        self.assertEqual(argv[argv.index("--fps") + 1], "10")
+
+    def test_without_out_writes_the_export_to_stdout(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main([self.preset_file, "--format", "json", "--fps", "10", "--seconds", "1.5"]), 0)
+        self.assertEqual(len(json.loads(out.getvalue())["frames"]), 16)
+
+    def test_trajectory_module_still_runs_as_a_script(self):
+        out = os.path.join(self.dir, "traj.txt")
+        result = subprocess.run(
+            [sys.executable, "-m", "camera_motion.export.trajectory", self.preset_file,
+             "--format", "re10k", "-o", out],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(out, encoding="utf-8") as f:
+            self.assertTrue(parse_re10k(f.read().splitlines()))
 
 
 if __name__ == "__main__":

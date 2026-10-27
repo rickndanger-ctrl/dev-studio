@@ -11,6 +11,7 @@ import os
 import re
 import socketserver
 import tempfile
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from urllib.parse import parse_qs, urlsplit
@@ -18,14 +19,14 @@ from urllib.parse import parse_qs, urlsplit
 from camera_motion.engine.camera_path import path
 from camera_motion.export.formats import export_text
 from camera_motion.preview.anim_svg import render_animated
-from camera_motion.presets import load_help
-from camera_motion.presets.validate import load_json
+from camera_motion.presets import load_catalog, load_help
+from camera_motion.presets.validate import SCHEMA_PATH, load_json, validate_catalog
 from camera_motion.sequences.build import build as build_sequence
 from camera_motion.web import export_frames
 
 EASINGS = ("linear", "ease_in", "ease_out", "ease_in_out")
 AXES = ("x", "z")
-FLOAT_KEYS = ("distance", "angle", "radius", "fov_end")
+FLOAT_KEYS = ("distance", "angle", "radius", "subject_distance")
 ALLOWED_KEYS = set(FLOAT_KEYS) | {"axis", "easing", "seconds", "fps"}
 
 # format -> (export_text kind, file extension, content type)
@@ -58,6 +59,9 @@ def _sequence_summary(seq, frames):
     }
 
 
+_SCHEMA = load_json(SCHEMA_PATH)  # the bounds for merged presets come from here
+
+
 class ApiError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -77,8 +81,7 @@ class Viewer:
 
     def __init__(self, catalog_path=None, app_html=None, index_html=None, help_data=None):
         catalog_path = catalog_path or export_frames.default_catalog()
-        with open(catalog_path, encoding="utf-8") as f:
-            self.presets = json.load(f)
+        self.presets = load_catalog(catalog_path)
         self.by_id = {preset["id"]: preset for preset in self.presets}
         self.sequences = {}
         self.sequence_frames = {}
@@ -120,10 +123,10 @@ def _parse_value(key, value):
         if number <= 0:
             raise ApiError(400, "radius must be greater than 0")
         return number
-    if key == "fov_end":
+    if key == "subject_distance":
         number = _float(key, value)
-        if not 1 <= number <= 179:
-            raise ApiError(400, "fov_end must be between 1 and 179 degrees")
+        if number <= 0:
+            raise ApiError(400, "subject_distance must be greater than 0")
         return number
     if key == "seconds":
         number = _float(key, value)
@@ -162,7 +165,7 @@ def settings(preset, query):
     ov = parse_overrides(query)
     applied = copy.deepcopy(preset)
     params = dict(applied.get("params", {}))
-    for key in ("distance", "angle", "radius", "fov_end", "axis"):
+    for key in ("distance", "angle", "radius", "subject_distance", "axis"):
         if key in ov:
             params[key] = ov[key]
     applied["params"] = params
@@ -170,6 +173,10 @@ def settings(preset, query):
         applied["easing"] = ov["easing"]
     seconds = ov.get("seconds", preset.get("duration_s", 3.0))
     fps = ov.get("fps", preset.get("fps", 24))
+    errors = validate_catalog({"presets": [applied]}, _SCHEMA)
+    if errors:
+        # The validator names the preset as presets[0]; a single merged preset reads better without it.
+        raise ApiError(400, errors[0].replace("presets[0].", "", 1))
     return applied, seconds, fps
 
 
@@ -192,6 +199,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._dispatch(urlsplit(self.path))
         except ApiError as err:
             self._send(err.status, JSON, json.dumps({"error": str(err)}).encode("utf-8"))
+        except Exception:
+            traceback.print_exc()
+            self._send(500, JSON, json.dumps({"error": "internal server error"}).encode("utf-8"))
 
     def log_message(self, format, *args):  # keep test and console output quiet
         pass
@@ -289,14 +299,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
         raise ApiError(404, f"no route for {route!r}")
 
 
-class _Server(ThreadingHTTPServer):
-    """ThreadingHTTPServer without the reverse-DNS lookup in HTTPServer.server_bind.
-
-    HTTPServer.server_bind calls socket.getfqdn(), which is slow on macOS CI runners. The
-    server name is only informational here, so the bound address is used instead.
-    """
+class ViewerServer(ThreadingHTTPServer):
+    # Off, so a port that is already in use is an error, not shared with another server.
+    allow_reuse_address = False
 
     def server_bind(self):
+        # Skip HTTPServer.server_bind, which calls socket.getfqdn(): slow reverse DNS on some CI hosts.
         socketserver.TCPServer.server_bind(self)
         host, port = self.server_address[:2]
         self.server_name = str(host)
@@ -304,6 +312,6 @@ class _Server(ThreadingHTTPServer):
 
 
 def make_server(viewer, port=0):
-    """A server on 127.0.0.1:port serving viewer. Port 0 picks a free port."""
+    """A ViewerServer on 127.0.0.1:port serving viewer. Port 0 picks a free port."""
     handler = type("Handler", (ViewerHandler,), {"viewer": viewer})
-    return _Server(("127.0.0.1", port), handler)
+    return ViewerServer(("127.0.0.1", port), handler)

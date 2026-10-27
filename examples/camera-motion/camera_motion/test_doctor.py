@@ -7,6 +7,7 @@ from unittest import mock
 
 from camera_motion import doctor
 from camera_motion.cli import main as cli_main
+from camera_motion.presets import load_catalog
 
 
 def _run(fn):
@@ -22,6 +23,23 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("FAIL", out)
         self.assertEqual(out.count("PASS "), len(doctor.CHECKS))
+
+    def test_help_present_check_runs(self):
+        code, out = _run(doctor.main)
+        self.assertIn("PASS help present", out)
+        self.assertEqual(len(doctor.CHECKS), 9)
+
+    def test_missing_help_fails_and_exits_1(self):
+        with mock.patch.object(doctor, "load_help", side_effect=FileNotFoundError("help file not found: x")):
+            code, out = _run(doctor.main)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL help present: FileNotFoundError: help file not found", out)
+
+    def test_doctor_reads_the_catalog_with_load_catalog(self):
+        with mock.patch.object(doctor, "load_catalog", wraps=load_catalog) as spy:
+            code, out = _run(doctor.main)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(spy.called)
 
     def test_cli_doctor_exits_0(self):
         code, out = _run(lambda: cli_main(["doctor"]))

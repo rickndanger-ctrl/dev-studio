@@ -55,8 +55,7 @@
     "name": "Dolly zoom in",
     "type": "dolly_zoom",
     "params": {
-      "distance": 1,
-      "fov_end": 30
+      "distance": 1
     },
     "easing": "ease_in_out",
     "description": "Dolly 1 unit toward the subject while narrowing the field of view from 50 to 30."

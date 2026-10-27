@@ -1,4 +1,7 @@
+import hashlib
+import json
 import math
+import os
 import unittest
 
 from camera_motion.engine.camera_path import DEFAULT_START, path
@@ -90,10 +93,13 @@ class CameraPathTests(unittest.TestCase):
                 self.assertTrue(all(abs(f["position"][2] - 5.0) < 1e-12 for f in frames))
 
     def test_dolly_zoom(self):
+        # Subject at distance 5 with fov 50: moving 2 leaves d = 3, and fov = 2 atan(k / d).
+        k = 5.0 * math.tan(math.radians(25.0))
         self.check_preset(
             "dolly_zoom",
             {"distance": 2.0, "fov_end": 30.0},
-            {"position": [0.0, 0.0, 3.0], "rotation": [0.0, 0.0, 0.0], "fov": 30.0},
+            {"position": [0.0, 0.0, 3.0], "rotation": [0.0, 0.0, 0.0],
+             "fov": math.degrees(2.0 * math.atan(k / 3.0))},
         )
 
     def test_crane(self):
@@ -260,6 +266,97 @@ class CameraFrameTests(unittest.TestCase):
     def test_unknown_frame_raises(self):
         with self.assertRaises(ValueError):
             path(_preset("dolly", distance=1.0, axis="z", frame="screen"), duration_s=DURATION, fps=FPS)
+
+
+CATALOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "presets", "catalog.json")
+# sha256 of json.dumps(path(preset)) for each non-dolly_zoom catalog preset, computed from the
+# engine before dolly_zoom changed. Those presets must stay byte-identical.
+GOLDEN = {
+    "dolly_in": "74f62ebabb43064ec4700302ecb5727fb36f232c664442defcaad63cacd0f135",
+    "dolly_out": "9fc8214e98af357d7bc67d19964f4f2ae4ffae2cbdba734ff06ed70d0fb0b939",
+    "dolly_left": "155764927495b7ceb964ee404d68f26ac48fe43e55f22e9fdf400ac28fb0a309",
+    "dolly_right": "43a763b57ddb1c46924c55b1cf22aa2473f156d796ba215bba85cda7228a56c7",
+    "crane_up": "5cb40fb313d5dee9b73fafdc0cbd78b739c706ccef4c29a1c2668ed81da9efd9",
+    "crane_down": "4ea12ac4df21a7ce546d696988ac649ea4dc9c16d02044d9bc80dbcceb62a905",
+    "orbit_left": "6fd5c7aa1f398b590da71e1d681df2997a2540a2f91ebfb7b834371dde34470f",
+    "orbit_right": "c2f32886881f80da4ce0bdef61a374d9eecd55bc91fa442bddac03199a1d8db9",
+    "pan_left": "c3c0cfe1d51e04de432300439b39fc5103ff7b7162065b4511ddf47276ea9bb7",
+    "pan_right": "4f6984a9b8a6ee4b434714329eb78677b38649accc2e528b69467a655bce2246",
+    "tilt_up": "bce50cdf3c664d9d92eb2e504a8e79f89e3711ec81e9487bfa683c266c9b0e14",
+    "tilt_down": "7edbd6a9553ec21126d3af042e88374729928d0f68aeda88a1799b9bb219399a",
+}
+
+
+def _catalog():
+    with open(CATALOG, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _forward(rotation):
+    yaw, pitch = math.radians(rotation[0]), math.radians(rotation[1])
+    return (-math.sin(yaw) * math.cos(pitch), math.sin(pitch), -math.cos(yaw) * math.cos(pitch))
+
+
+def _depth(pos, forward):
+    """Distance from the camera to the origin, measured along its forward direction."""
+    return -sum(p * f for p, f in zip(pos, forward))
+
+
+class DollyZoomTests(unittest.TestCase):
+    def test_subject_height_is_constant_for_the_catalog_dolly_zooms(self):
+        for preset in _catalog():
+            if preset["type"] != "dolly_zoom":
+                continue
+            with self.subTest(id=preset["id"]):
+                frames = path(preset, duration_s=DURATION, fps=FPS)
+                forward = _forward(DEFAULT_START["rotation"])
+                heights = [1.0 / (_depth(f["position"], forward) * math.tan(math.radians(f["fov"]) / 2))
+                           for f in frames]
+                for h in heights:
+                    self.assertAlmostEqual(h / heights[0], 1.0, delta=1e-9)
+
+    def test_camera_frame_subject_height_is_constant(self):
+        orbit = path({"type": "orbit", "params": {"angle": 90.0}, "easing": "linear"},
+                     duration_s=DURATION, fps=FPS)
+        start = {"position": list(orbit[-1]["position"]), "rotation": list(orbit[-1]["rotation"]),
+                 "fov": orbit[-1]["fov"]}
+        frames = path(_preset("dolly_zoom", distance=1.0, fov_end=75.0, frame="camera"),
+                      duration_s=DURATION, fps=FPS, start=start)
+        forward = _forward(start["rotation"])
+        heights = [1.0 / (_depth(f["position"], forward) * math.tan(math.radians(f["fov"]) / 2))
+                   for f in frames]
+        for h in heights:
+            self.assertAlmostEqual(h / heights[0], 1.0, delta=1e-9)
+
+    def test_non_dolly_zoom_presets_are_byte_identical(self):
+        catalog = [p for p in _catalog() if p["type"] != "dolly_zoom"]
+        self.assertEqual({p["id"] for p in catalog}, set(GOLDEN))
+        for preset in catalog:
+            with self.subTest(id=preset["id"]):
+                digest = hashlib.sha256(json.dumps(path(preset)).encode("utf-8")).hexdigest()
+                self.assertEqual(digest, GOLDEN[preset["id"]])
+
+    def test_subject_distance_override(self):
+        frames = path(_preset("dolly_zoom", distance=1.0, subject_distance=10.0),
+                      duration_s=DURATION, fps=FPS)
+        self.assertAlmostEqual(frames[0]["fov"], 50.0, delta=1e-12)
+        k = 10.0 * math.tan(math.radians(25.0))
+        self.assertAlmostEqual(frames[-1]["fov"], math.degrees(2.0 * math.atan(k / 9.0)), delta=1e-9)
+        self.assertAlmostEqual(frames[-1]["position"][2], 4.0, delta=1e-9)
+
+    def test_dolly_through_the_subject_raises(self):
+        with self.assertRaises(ValueError):
+            path(_preset("dolly_zoom", distance=4.9), duration_s=DURATION, fps=FPS)
+
+    def test_subject_behind_the_camera_raises(self):
+        start = {"position": [0.0, 0.0, -5.0], "rotation": [0.0, 0.0, 0.0], "fov": 50.0}
+        with self.assertRaises(ValueError):
+            path(_preset("dolly_zoom", distance=1.0), duration_s=DURATION, fps=FPS, start=start)
+
+    def test_fov_end_is_ignored(self):
+        a = path(_preset("dolly_zoom", distance=1.0, fov_end=30.0), duration_s=DURATION, fps=FPS)
+        b = path(_preset("dolly_zoom", distance=1.0, fov_end=80.0), duration_s=DURATION, fps=FPS)
+        self.assertEqual(json.dumps(a), json.dumps(b))
 
 
 if __name__ == "__main__":

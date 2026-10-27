@@ -12,6 +12,7 @@ import os
 import sys
 
 from camera_motion.engine.camera_path import path
+from camera_motion.presets import load_catalog
 
 FPS = 24
 DURATION_S = 3.0
@@ -45,8 +46,7 @@ def _check_finite(preset_id, frames):
 
 def build(catalog_path):
     """Return the frames document for every preset in catalog_path."""
-    with open(catalog_path, encoding="utf-8") as f:
-        presets = json.load(f)
+    presets = load_catalog(catalog_path)
     doc = {}
     for preset in presets:
         pid = preset["id"]

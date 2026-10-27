@@ -35,7 +35,7 @@
     "id": "dolly_zoom_in",
     "name": "Dolly Zoom In",
     "type": "dolly_zoom",
-    "params": {"distance": 1.0, "fov_end": 75},
+    "params": {"distance": 1.0},
     "easing": "ease_in_out",
     "description": "Camera moves in while the lens widens to a wider field of view."
   },
@@ -43,7 +43,7 @@
     "id": "dolly_zoom_out",
     "name": "Dolly Zoom Out",
     "type": "dolly_zoom",
-    "params": {"distance": -1.0, "fov_end": 35},
+    "params": {"distance": -1.0},
     "easing": "ease_in_out",
     "description": "Camera moves back while the lens narrows to a tighter field of view."
   },

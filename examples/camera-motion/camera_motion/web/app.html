@@ -96,7 +96,7 @@ a { color: var(--accent); }
     { key: "distance", label: "Distance", min: -3, max: 3, step: 0.1, fallback: 0 },
     { key: "angle", label: "Angle", min: -180, max: 180, step: 1, fallback: 0 },
     { key: "radius", label: "Radius", min: 1, max: 10, step: 0.1, fallback: 5 },
-    { key: "fov_end", label: "End fov", min: 10, max: 90, step: 1, fallback: 30 },
+    { key: "subject_distance", label: "Subject distance", min: 1, max: 10, step: 0.1, fallback: 5 },
     { key: "seconds", label: "Seconds", min: 1, max: 10, step: 0.5, fallback: 3 },
   ];
   const EASINGS = ["linear", "ease_in", "ease_out", "ease_in_out"];
@@ -126,12 +126,17 @@ a { color: var(--accent); }
 
   function controlsFor(preset) {
     const params = preset.params || {};
-    return NUMBER_CONTROLS.filter((c) => c.key === "seconds" || c.key in params);
+    return NUMBER_CONTROLS.filter(
+      (c) =>
+        c.key === "seconds" ||
+        c.key in params ||
+        (c.key === "subject_distance" && preset.type === "dolly_zoom")
+    );
   }
 
   function queryString() {
     const q = new URLSearchParams();
-    for (const key of ["distance", "angle", "radius", "fov_end", "axis", "easing", "seconds"]) {
+    for (const key of ["distance", "angle", "radius", "subject_distance", "axis", "easing", "seconds"]) {
       if (touched.has(key)) q.set(key, current[key]);
     }
     const s = q.toString();

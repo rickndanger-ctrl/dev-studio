@@ -53,6 +53,12 @@ class CiExampleTests(unittest.TestCase):
                 self.assertNotIn(marker, text)
         self.assertIsNone(LEADING_SLASH.search(text), LEADING_SLASH.search(text))
 
+    def test_matrix_excludes_ubuntu_3_9_and_keeps_macos_and_3_9(self):
+        text = _text()
+        self.assertRegex(text, r'exclude:\s*\n\s*- os: ubuntu-latest\s*\n\s*python-version: "3\.9"')
+        self.assertRegex(text, r"os: \[ubuntu-latest, macos-latest\]")
+        self.assertRegex(text, r'python-version: \["3\.9", "3\.12"\]')
+
     def test_has_no_secrets(self):
         self.assertNotIn("secrets.", _text())
 

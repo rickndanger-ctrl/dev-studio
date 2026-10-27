@@ -126,6 +126,21 @@ class OrbitRadiusOptionalTests(unittest.TestCase):
         self.assertTrue(errors_for(preset_with(type="orbit", params={"radius": 5})))
 
 
+class DollyZoomSubjectDistanceTests(unittest.TestCase):
+    def test_dolly_zoom_needs_only_distance(self):
+        self.assertEqual(errors_for(preset_with(type="dolly_zoom", params={"distance": 1.0})), [])
+
+    def test_dolly_zoom_accepts_positive_subject_distance(self):
+        preset = preset_with(type="dolly_zoom", params={"distance": 1.0, "subject_distance": 4.0})
+        self.assertEqual(errors_for(preset), [])
+
+    def test_dolly_zoom_rejects_non_positive_subject_distance(self):
+        for value in (0, -2.0):
+            with self.subTest(value=value):
+                preset = preset_with(type="dolly_zoom", params={"distance": 1.0, "subject_distance": value})
+                self.assertTrue(errors_for(preset))
+
+
 class RejectionTests(unittest.TestCase):
     """Each bad preset must fail, and the message must name the field and the rule."""
 

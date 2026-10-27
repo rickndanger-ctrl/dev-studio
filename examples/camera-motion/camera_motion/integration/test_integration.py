@@ -132,7 +132,12 @@ class EndPoseDirectionTests(unittest.TestCase):
                 delta_y = end_frame(preset)["position"][1] - START["position"][1]
                 self.assertEqual(sign(delta_y), sign(preset["params"]["distance"]))
 
-    def test_dolly_zoom_moves_in_and_reaches_its_fov_end(self):
+    def test_dolly_zoom_moves_in_and_holds_the_subject_size(self):
+        # The subject sits at the look-at point, so its size scales with 1 / (distance * tan(fov / 2)).
+        # The move keeps distance * tan(fov / 2) constant, so the size at the end matches the start.
+        def size_term(frame):
+            return -frame["position"][2] * math.tan(math.radians(frame["fov"]) / 2)
+
         for preset in PRESETS:
             if preset["type"] != "dolly_zoom":
                 continue
@@ -140,7 +145,7 @@ class EndPoseDirectionTests(unittest.TestCase):
                 end = end_frame(preset)
                 delta_z = end["position"][2] - START["position"][2]
                 self.assertEqual(sign(delta_z), -sign(preset["params"]["distance"]))
-                self.assertAlmostEqual(end["fov"], preset["params"]["fov_end"])
+                self.assertAlmostEqual(size_term(end) / size_term(START), 1.0, places=6)
 
     def test_orbit_turns_counter_clockwise_from_above_for_positive_angle(self):
         # Schema: positive orbit angle = counter-clockwise seen from above.

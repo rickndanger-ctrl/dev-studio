@@ -64,6 +64,23 @@ def _frames_from_poses(poses):
     return frames
 
 
+SPACING_TOLERANCE = 1e-3
+
+
+def check_even_spacing(times):
+    """Raise ValueError if the timestamps are not evenly spaced, naming the first bad frame.
+
+    Every gap must match the average step (duration / (n - 1)) to within 1e-3, relative.
+    """
+    if len(times) < 2:
+        return
+    step = (float(times[-1]) - float(times[0])) / (len(times) - 1)
+    for i in range(1, len(times)):
+        gap = float(times[i]) - float(times[i - 1])
+        if abs(gap - step) > SPACING_TOLERANCE * step:
+            raise ValueError(f"timestamps are not evenly spaced (frame {i})")
+
+
 def _fps_from_times(times):
     if len(times) < 2 or times[1] == times[0]:
         raise ValueError("cannot infer fps from fewer than two distinct timestamps")
@@ -100,7 +117,9 @@ def read_re10k(lines):
     if not poses:
         raise ValueError("no RealEstate10K frames found")
     frames = _frames_from_poses(poses)
-    return {"fps": _fps_from_times([p[0] for p in poses]), "frames": frames, "fov_track": True}
+    times = [p[0] for p in poses]
+    check_even_spacing(times)
+    return {"fps": _fps_from_times(times), "frames": frames, "fov_track": True}
 
 
 def read_json(doc):
@@ -127,16 +146,18 @@ def read_json(doc):
         R = [[float(c2w[r][c]) for c in range(3)] for r in range(3)]
         position = [float(c2w[r][3]) for r in range(3)]
         poses.append((t, position, R, math.degrees(2.0 * math.atan(0.5 / fy))))
+    check_even_spacing([p[0] for p in poses])
     fps = float(doc.get("fps") or _fps_from_times([p[0] for p in poses]))
     return {"fps": fps, "frames": _frames_from_poses(poses), "fov_track": True}
 
 
 def _buffer_bytes(doc, index):
-    buffers = doc.get("buffers")
-    if not isinstance(buffers, list) or index >= len(buffers):
-        raise ValueError(f"glTF buffer {index} is missing")
-    buf = buffers[index]
+    buf = _item(doc.get("buffers"), index, "buffers")
+    if not isinstance(buf, dict):
+        raise ValueError(f"glTF buffer {index} must be an object")
     uri = buf.get("uri", "")
+    if not isinstance(uri, str):
+        raise ValueError(f"glTF buffer {index} uri must be a string")
     prefix = next((p for p in GLTF_DATA_PREFIXES if uri.startswith(p)), None)
     if prefix is None:
         raise ValueError("glTF buffer must be an embedded base64 data URI")
@@ -149,25 +170,37 @@ def _buffer_bytes(doc, index):
     return data
 
 
+def _item(items, index, what):
+    """items[index] for a glTF list, or a ValueError naming the list and the index."""
+    if not isinstance(items, list):
+        raise ValueError(f"glTF has no {what} list")
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(items):
+        raise ValueError(f"glTF {what} index {index!r} is out of range (there are {len(items)})")
+    return items[index]
+
+
+def _field(obj, key, where):
+    """obj[key] for a glTF object, or a ValueError naming the missing field."""
+    if not isinstance(obj, dict) or key not in obj:
+        raise ValueError(f"glTF {where} is missing '{key}'")
+    return obj[key]
+
+
 def _accessor(doc, cache, index, kind):
-    accessors = doc.get("accessors")
-    if not isinstance(accessors, list) or index >= len(accessors):
-        raise ValueError(f"glTF accessor {index} is missing")
-    acc = accessors[index]
-    if acc.get("componentType") != GLTF_FLOAT or acc.get("type") != kind:
+    acc = _item(doc.get("accessors"), index, "accessors")
+    if not isinstance(acc, dict) or acc.get("componentType") != GLTF_FLOAT or acc.get("type") != kind:
         raise ValueError(f"glTF accessor {index} must be float {kind}")
-    views = doc.get("bufferViews", [])
-    if not isinstance(views, list) or acc.get("bufferView", -1) >= len(views):
-        raise ValueError(f"glTF accessor {index} has no buffer view")
-    view = views[acc["bufferView"]]
+    view = _item(doc.get("bufferViews"), _field(acc, "bufferView", f"accessor {index}"), "bufferViews")
+    if not isinstance(view, dict):
+        raise ValueError(f"glTF buffer view for accessor {index} must be an object")
     buf_index = view.get("buffer", 0)
     if buf_index not in cache:
         cache[buf_index] = _buffer_bytes(doc, buf_index)
     data = cache[buf_index]
     comps = GLTF_COMPONENTS[kind]
-    count = acc.get("count", 0)
+    count = _field(acc, "count", f"accessor {index}")
     offset = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
-    if offset + count * comps * 4 > len(data):
+    if not isinstance(count, int) or count < 0 or offset + count * comps * 4 > len(data):
         raise ValueError(f"glTF accessor {index} reads past the end of its buffer")
     flat = struct.unpack_from("<%df" % (count * comps), data, offset)
     return [tuple(flat[i * comps:(i + 1) * comps]) for i in range(count)]
@@ -177,32 +210,34 @@ def read_gltf(doc):
     """Parse a glTF 2.0 camera animation written by export.gltf (embedded float32 data)."""
     if not isinstance(doc, dict) or "asset" not in doc:
         raise ValueError("glTF document needs an 'asset' entry")
-    animations = doc.get("animations")
-    if not isinstance(animations, list) or not animations:
-        raise ValueError("glTF document has no animations")
+    animation = _item(doc.get("animations"), 0, "animations")
+    if not isinstance(animation, dict):
+        raise ValueError("glTF animation 0 must be an object")
+    samplers = animation.get("samplers", [])
     channels = {}
-    samplers = animations[0].get("samplers", [])
-    for channel in animations[0].get("channels", []):
-        target = channel.get("target", {})
-        channels[target.get("path")] = (target.get("node"), samplers[channel["sampler"]])
+    for channel in animation.get("channels", []):
+        target = _field(channel, "target", "channel")
+        sampler = _item(samplers, _field(channel, "sampler", "channel"), "samplers")
+        channels[_field(target, "path", "channel target")] = (_field(target, "node", "channel target"), sampler)
     if "translation" not in channels or "rotation" not in channels:
         raise ValueError("glTF animation needs translation and rotation channels")
 
-    node_index = channels["translation"][0]
+    node_index, translation_sampler = channels["translation"]
+    rotation_sampler = channels["rotation"][1]
     cache = {}
-    times = _accessor(doc, cache, channels["translation"][1]["input"], "SCALAR")
-    positions = _accessor(doc, cache, channels["translation"][1]["output"], "VEC3")
-    quats = _accessor(doc, cache, channels["rotation"][1]["output"], "VEC4")
+    times = _accessor(doc, cache, _field(translation_sampler, "input", "sampler"), "SCALAR")
+    positions = _accessor(doc, cache, _field(translation_sampler, "output", "sampler"), "VEC3")
+    quats = _accessor(doc, cache, _field(rotation_sampler, "output", "sampler"), "VEC4")
     if not (len(times) == len(positions) == len(quats)):
         raise ValueError("glTF keyframe counts do not match")
 
-    nodes = doc.get("nodes", [])
-    cameras = doc.get("cameras", [])
+    node = _item(doc.get("nodes"), node_index, "nodes")
+    camera = _item(doc.get("cameras"), _field(node, "camera", f"node {node_index}"), "cameras")
+    perspective = _field(camera, "perspective", "camera")
     try:
-        cam_index = nodes[node_index]["camera"]
-        yfov = float(cameras[cam_index]["perspective"]["yfov"])
-    except (IndexError, KeyError, TypeError, ValueError):
-        raise ValueError("glTF animated node has no perspective camera with yfov") from None
+        yfov = float(_field(perspective, "yfov", "camera perspective"))
+    except (TypeError, ValueError):
+        raise ValueError("glTF camera yfov must be a number") from None
     fov = math.degrees(yfov)
 
     poses = []
@@ -210,6 +245,7 @@ def read_gltf(doc):
         R = quat_to_mat(quat)
         poses.append((float(t[0]), list(pos), R, fov))
     extras = doc["asset"].get("extras", {}) if isinstance(doc["asset"], dict) else {}
+    check_even_spacing([p[0] for p in poses])
     fps = float(extras.get("fps") or _fps_from_times([p[0] for p in poses]))
     # glTF carries one yfov for the whole animation, so it has no zoom track.
     return {"fps": fps, "frames": _frames_from_poses(poses), "fov_track": False}

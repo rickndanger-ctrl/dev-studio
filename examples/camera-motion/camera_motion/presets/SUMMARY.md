@@ -38,8 +38,8 @@ Python cannot import it, finds no tests, and exits 5 ("NO TESTS RAN").
 | dolly_out | dolly | axis z, distance -1.0 | backward |
 | dolly_left | dolly | axis x, distance -1.0 | slide left |
 | dolly_right | dolly | axis x, distance +1.0 | slide right |
-| dolly_zoom_in | dolly_zoom | distance +1.0, fov_end 75 | moves in while the lens widens |
-| dolly_zoom_out | dolly_zoom | distance -1.0, fov_end 35 | moves back while the lens narrows |
+| dolly_zoom_in | dolly_zoom | distance +1.0 | moves in while the lens widens (fov 50 -> about 60.5); subject keeps its size |
+| dolly_zoom_out | dolly_zoom | distance -1.0 | moves back while the lens narrows (fov 50 -> about 42.5); subject keeps its size |
 | crane_up | crane | distance +1.0 | rise |
 | crane_down | crane | distance -1.0 | lower |
 | orbit_left | orbit | angle -45, radius 5.0 | camera travels to its left (clockwise seen from above) |
@@ -56,7 +56,7 @@ All presets use `ease_in_out`.
 - Exactly the fields `id`, `name`, `type`, `params`, `easing`, `description`; no extras, at the top level or in `params`.
 - `id` is snake_case (`^[a-z][a-z0-9_]*$`) and unique in the catalog; `name` and `description` are non-empty.
 - Ranges: dolly/dolly_zoom/crane distance -50..50; orbit angle -360..360, radius above 0 up to 50; pan angle -180..180;
-  tilt angle -90..90; fov_end 10..150. A distance or angle of exactly 0 is rejected (the move would do nothing).
+  tilt angle -90..90; dolly_zoom subject_distance > 0 (fov_end is deprecated and ignored). A distance or angle of exactly 0 is rejected (the move would do nothing).
 
 ## Sign conventions
 
@@ -79,7 +79,7 @@ python3 -m camera_motion.presets.make_docs         # regenerates docs/PRESETS.md
 `integration/test_integration.py` checks that every preset validates and runs to 73 finite frames
 (3 s at 24 fps), starts at the engine's default pose, and ends where its name says: dolly_in closer to the origin,
 crane_up higher, orbits rotate yaw by exactly `angle` and keep their radius, pans and tilts change only yaw or pitch,
-dolly zooms reach `fov_end`. Synthetic presets pin the engine's own sign convention.
+dolly zooms keep the subject the same size on screen. Synthetic presets pin the engine's own sign convention.
 
 Conventions the catalog follows, all matching the engine:
 

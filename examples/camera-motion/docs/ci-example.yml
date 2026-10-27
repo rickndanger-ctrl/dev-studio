@@ -17,6 +17,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.9", "3.12"]
+        # Ubuntu 26.04 (ubuntu-latest) has no Python 3.9; macOS keeps 3.9.
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
     defaults:
       run:
         working-directory: examples/camera-motion

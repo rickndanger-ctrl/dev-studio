@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from camera_motion.engine.camera_path import path as camera_path
 from camera_motion.export.formats import export_text, parse_re10k
 from camera_motion.preview.anim_svg import render_animated
+from camera_motion.presets import load_catalog, load_help
 from camera_motion.presets.validate import SchemaError, load_json, validate_catalog
 
 PACKAGE = os.path.dirname(os.path.abspath(__file__))
@@ -23,14 +24,6 @@ PACKAGE_FILES = ("presets/catalog.json", "presets/schema.json", "web/app.html", 
 MIN_PYTHON = (3, 9)
 FPS = 24
 EXPORT_EXT = {"json": "json", "re10k": "txt", "blender": "py", "gltf": "gltf"}
-
-
-def _presets(catalog):
-    if isinstance(catalog, list):
-        return catalog
-    if isinstance(catalog, dict) and isinstance(catalog.get("presets"), list):
-        return catalog["presets"]
-    raise ValueError("catalog has no preset list")
 
 
 def check_python():
@@ -48,7 +41,7 @@ def check_catalog():
     try:
         catalog = load_json(CATALOG)
         errors = validate_catalog(catalog, load_json(SCHEMA))
-        presets = _presets(catalog)
+        presets = load_catalog(CATALOG)
     except (OSError, ValueError, SchemaError) as exc:
         return str(exc)
     if errors:
@@ -59,8 +52,16 @@ def check_catalog():
     return None
 
 
+def check_help():
+    help_by_id = load_help()
+    if not help_by_id:
+        return "help.json has no entries"
+    missing = [p["id"] for p in load_catalog(CATALOG) if p["id"] not in help_by_id]
+    return ("no help for " + ", ".join(missing)) if missing else None
+
+
 def _first_preset():
-    return _presets(load_json(CATALOG))[0]
+    return load_catalog(CATALOG)[0]
 
 
 def check_anim():
@@ -100,6 +101,7 @@ CHECKS = (
     ("python >= 3.9", check_python),
     ("package data present", check_package_data),
     ("catalog validates", check_catalog),
+    ("help present", check_help),
     ("anim renders", check_anim),
     ("export json", _export_check("json")),
     ("export re10k", _export_check("re10k")),

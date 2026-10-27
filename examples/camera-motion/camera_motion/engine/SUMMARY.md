@@ -11,6 +11,7 @@ camera-engine is the single source of camera-motion: engine, presets (the 14-pre
 - dolly: on x, +distance moves the camera right. On z, +distance moves toward the subject (z decreases).
 - crane: +distance moves up.
 - orbit: +angle makes the camera travel to its right around the subject, and yaw increases by the same angle so the camera keeps facing the subject. "Orbit left" is a negative angle. The distance eases from the start distance to params.radius, so frame 0 always equals the start pose.
+- dolly_zoom: the subject stays the same size on screen. The subject is at the look-at point, at distance d0 = params.subject_distance if given, else the distance from the start position to the origin along the start forward direction (dot(origin - position, forward)). d0 <= 0 is a ValueError. The camera moves along forward by distance·e, so d(e) = d0 - distance·e, which must stay at least 0.05·d0 (else ValueError). The fov follows the distance: k = d0·tan(fov0/2) and fov(e) = 2·atan(k / d(e)) in degrees. `fov_end` is deprecated and ignored.
 - frame (dolly, dolly_zoom, crane; optional): "world" (default) moves along the world axes, as described above. "camera" moves along the camera's own axes, taken from the start pose and fixed for the whole move: forward (-sin yaw·cos pitch, sin pitch, -cos yaw·cos pitch), right (cos yaw, 0, -sin yaw), up = right × forward. In camera frame, dolly z +distance moves toward where the camera looks, dolly x +distance moves to its right, dolly_zoom moves along forward, and crane moves along camera up. At the default start both frames give the same path. Use "camera" when chaining presets.
 - orbit radius is optional. Without it, orbit keeps the camera's current distance from the origin. With it, the distance eases from the current distance to radius.
 - Every move: frame 0 equals the start pose exactly.
@@ -20,7 +21,7 @@ Turns a camera-motion preset into per-frame camera state.
 ## Contract
 - Preset: `{"type": ..., "params": {...}, "easing": ...}`. `type` is one of
   `dolly`, `dolly_zoom`, `crane`, `orbit`, `pan`, `tilt`. Type parameters live under
-  `params` (`distance`, `angle`, `axis`, `fov_end`); `easing` stays top-level and
+  `params` (`distance`, `angle`, `axis`, `radius`, `frame`, `subject_distance`); `easing` stays top-level and
   defaults to `linear`.
 - Easing names: `linear`, `ease_in`, `ease_out`, `ease_in_out` (`engine/easing.py`, `ease(name, u)`).
 - `path(preset, duration_s=3.0, fps=24, start=None)` returns `N = round(duration_s * fps) + 1`

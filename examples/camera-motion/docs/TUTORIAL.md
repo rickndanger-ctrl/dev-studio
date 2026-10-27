@@ -106,6 +106,7 @@ Other glTF 2.0 viewers can open the same file.
 
 - **`command not found: camera-motion`**: the virtual environment is not active. Run
   `source ~/venvs/camera-motion/bin/activate` again in the same terminal.
-- **Port 8790 is busy**: start the server on another port, for example
-  `camera-motion serve --port 8791`, and open that port in the browser.
+- **`error: port N is in use`**: another program holds that port. Start the server on another port,
+  for example `camera-motion serve --port 8791`, and open that port in the browser.
+- **Check you reached the right page**: the browser tab is titled 'Camera motion'.
 - **An unknown preset id**: run `camera-motion list` to see the valid ids.

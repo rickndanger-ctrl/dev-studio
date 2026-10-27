@@ -6,10 +6,14 @@ Usage: python3 -m camera_motion.cli <command> [options]
   preview  <id|file> -o out.svg [--animate] [--catalog FILE]  render an SVG preview
   export   <id|file> --format re10k|json|blender|gltf -o out [--fps --seconds --width --height]
   serve    [--port 8790]                          serve the web viewer
+  doctor                                          check the install: one PASS or FAIL line per check
+  import   <file> [-o OUT]                        read a re10k, json or glTF camera file
+  match    <file>                                 rank catalog presets by how well they match a camera file
   sequence <file|sample id> [--export FORMAT | --preview] -o OUT   build a shot sequence
 
 <id|file>: an existing file is loaded as one preset; otherwise the id is looked up in
 --catalog, or in the bundled catalog when --catalog is not given.
+--debug (before the command) re-raises errors with a traceback instead of one error line.
 """
 import argparse
 import json
@@ -20,11 +24,10 @@ import sys
 from camera_motion.engine.camera_path import path as camera_path
 from camera_motion.export.formats import FORMATS, export_text
 from camera_motion.preview.svg_path import render
-from camera_motion.presets import load_help
+from camera_motion.presets import load_catalog, load_help
 
 DEFAULT_PORT = 8790
 
-BUNDLED_CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets", "catalog.json")
 SEQUENCE_SAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sequences", "samples")
 SAMPLE_ID = re.compile(r"[a-z0-9_]+")
 
@@ -34,8 +37,27 @@ class UnknownPreset(Exception):
 
 
 def _load_catalog(catalog):
-    with open(catalog or BUNDLED_CATALOG, encoding="utf-8") as f:
-        return json.load(f)
+    return load_catalog(catalog)
+
+
+def _positive_int(text):
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {text!r}") from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive whole number, got {text!r}")
+    return value
+
+
+def _positive_float(text):
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {text!r}") from None
+    if not (value > 0 and value != float("inf")):
+        raise argparse.ArgumentTypeError(f"must be a positive number, got {text!r}")
+    return value
 
 
 def _resolve(arg, catalog):
@@ -131,7 +153,9 @@ def _cmd_match(args):
 
     data = load(args.file)
     fov_track = data.get("fov_track", True)
-    for preset_id, value in match(data["frames"], fov_track=fov_track):
+    results = match(data["frames"], fov_track=fov_track)  # may raise: print nothing then
+    print("preset  score (lower = closer)")
+    for preset_id, value in results:
         print(f"{preset_id}  {value:.4f}")
     if not fov_track:
         print("note: glTF has no zoom track; dolly and dolly_zoom look the same")
@@ -191,6 +215,8 @@ def _cmd_sequence(args):
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="camera_motion", description="Camera motion presets.")
+    parser.add_argument("--debug", action="store_true",
+                        help="show a traceback for errors instead of one error line")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_catalog(p):
@@ -218,10 +244,10 @@ def _build_parser():
     p_export.add_argument("preset", help="preset id or preset JSON file")
     p_export.add_argument("--format", choices=FORMATS, required=True)
     p_export.add_argument("-o", "--out", required=True, help="output file")
-    p_export.add_argument("--fps", type=int, default=24)
-    p_export.add_argument("--seconds", type=float, default=3.0)
-    p_export.add_argument("--width", type=int, default=1024)
-    p_export.add_argument("--height", type=int, default=576)
+    p_export.add_argument("--fps", type=_positive_int, default=24)
+    p_export.add_argument("--seconds", type=_positive_float, default=3.0)
+    p_export.add_argument("--width", type=_positive_int, default=1024)
+    p_export.add_argument("--height", type=_positive_int, default=576)
     add_catalog(p_export)
     p_export.set_defaults(handler=_cmd_export)
 
@@ -254,7 +280,8 @@ def _build_parser():
 
 
 def main(argv=None):
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
     try:
         return args.handler(args)
     except UnknownPreset as err:
@@ -262,6 +289,12 @@ def main(argv=None):
         return 2
     except OSError as err:
         print(f"error: {err}", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError, TypeError) as err:
+        if args.debug:
+            raise
+        message = f"missing key {err.args[0]!r}" if isinstance(err, KeyError) else str(err)
+        print(f"error: {message}", file=sys.stderr)
         return 1
 
 

@@ -16,7 +16,6 @@ import argparse
 import json
 import sys
 
-from camera_motion.engine.camera_path import path
 from camera_motion.export.trajectory import K, intrinsics, pose_matrix, world_to_camera
 
 # OpenGL -> OpenCV camera axes: flip y and z.
@@ -102,6 +101,12 @@ def export_text(fmt, frames, preset, width=1024, height=576, fps=24):
 
 
 def main(argv=None):
+    """Same as `camera-motion export`; kept so `python3 -m camera_motion.export.trajectory` works."""
+    import os
+    import tempfile
+
+    from camera_motion.cli import main as cli_main
+
     parser = argparse.ArgumentParser(description="Export a camera-motion preset as camera poses.")
     parser.add_argument("preset", help="preset JSON file")
     parser.add_argument("--format", choices=FORMATS, required=True)
@@ -112,17 +117,21 @@ def main(argv=None):
     parser.add_argument("--height", type=int, default=576)
     args = parser.parse_args(argv)
 
-    with open(args.preset) as f:
-        preset = json.load(f)
-    frames = path(preset, duration_s=args.seconds, fps=args.fps)
-    text = export_text(args.format, frames, preset, args.width, args.height, args.fps)
-
+    export_args = [
+        "export", args.preset, "--format", args.format,
+        "--fps", str(args.fps), "--seconds", str(args.seconds),
+        "--width", str(args.width), "--height", str(args.height),
+    ]
     if args.out:
-        with open(args.out, "w") as f:
-            f.write(text)
-    else:
-        sys.stdout.write(text)
-    return 0
+        return cli_main(export_args + ["-o", args.out])
+    # The CLI always writes a file, so write to a temp file and copy it to stdout.
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "export.out")
+        code = cli_main(export_args + ["-o", target])
+        if code == 0:
+            with open(target, encoding="utf-8") as f:
+                sys.stdout.write(f.read())
+        return code
 
 
 if __name__ == "__main__":

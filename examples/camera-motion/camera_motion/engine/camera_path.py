@@ -71,12 +71,26 @@ def _offset(start, preset, e):
             sign = 1.0 if axis == "x" else -1.0
             pos[AXES[axis]] += sign * distance * e
     elif kind == "dolly_zoom":
+        # The subject stays at the look-at point: the camera moves toward it while the fov
+        # follows the distance, so the subject's projected height stays the same.
+        f0, _, _ = _basis(start["rotation"])
+        if "subject_distance" in params:
+            d0 = float(params["subject_distance"])
+        else:
+            d0 = -sum(p * c for p, c in zip(start["position"], f0))  # origin measured along forward
+        if d0 <= 0:
+            raise ValueError(f"dolly_zoom needs the subject in front of the camera (distance {d0:g})")
+        d = d0 - distance * e
+        if d < 0.05 * d0:
+            raise ValueError("dolly_zoom would move through the subject; reduce distance "
+                             "or raise subject_distance")
         if camera:
-            f, _, _ = _basis(start["rotation"])
-            pos = _along(pos, f, distance * e)
+            pos = _along(pos, f0, distance * e)
         else:
             pos[2] -= distance * e
-        fov = _lerp(start["fov"], params["fov_end"], e)
+        k = d0 * math.tan(math.radians(start["fov"]) / 2)
+        # Frame 0 is the start pose exactly, so take its fov directly, not via tan and atan.
+        fov = start["fov"] if d == d0 else math.degrees(2 * math.atan(k / d))
     elif kind == "crane":
         if camera:
             _, _, u = _basis(start["rotation"])
