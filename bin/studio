@@ -334,7 +334,13 @@ open_window() {
   esac
   # shellcheck disable=SC2086
   case $TERMINAL_APP in
-    omac)    omac terminal "exec $attach" --title "Dev Studio" >/dev/null || osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null ;;
+    omac)
+      # OMAC answers with "Opened terminal on page N" on success; anything else
+      # (a paused page, a refusal) means no tile appeared, so use a Terminal window.
+      if ! omac terminal "exec $attach" --title "Dev Studio" 2>&1 | grep -q '^Opened terminal'; then
+        warn "OMAC couldn't open a tile right now; opening a Terminal window instead."
+        osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null
+      fi ;;
     ghostty) open -na Ghostty.app --args --title="Dev Studio" -e $attach ;;
     iterm)   osascript -e "tell application \"iTerm\" to create window with default profile command \"$attach\"" -e 'tell application "iTerm" to activate' ;;
     *)       osascript "$STUDIO_HOME/macos/open-terminal.applescript" "$attach" >/dev/null ;;
