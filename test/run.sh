@@ -60,6 +60,7 @@ echo "No project given: the studio's own home"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up --no-attach
 check "home folder created as a git repo"    test -d "$HOME/DevStudio/.git"
+check "home has a first commit (worktrees need it)" git -C "$HOME/DevStudio" rev-parse HEAD
 check "space labelled Dev Studio · Claude"   has "--label Dev Studio · Claude"
 check "agents named studio-*"                has "claude --name studio-architect --model opus"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up --no-attach --codex
