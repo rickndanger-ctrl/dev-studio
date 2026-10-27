@@ -56,7 +56,7 @@ start_server_launchd() {
   <key>ProgramArguments</key><array>
     <string>$herdr_bin</string><string>--session</string><string>$STUDIO_SESSION</string><string>server</string>
   </array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$STUDIO_DATA/logs/herdr-server.log</string>
@@ -479,7 +479,7 @@ cmd_web() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$WEB_LABEL</string>
   <key>ProgramArguments</key><array><string>$STUDIO_HOME/bin/studio</string><string>web</string><string>serve</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$STUDIO_DATA/logs/web.log</string>
@@ -488,7 +488,7 @@ cmd_web() {
 PLIST
       launchctl bootout "gui/$(id -u)/$WEB_LABEL" >/dev/null 2>&1 || true
       launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl kickstart -k "gui/$(id -u)/$WEB_LABEL"
-      ok "Web view: http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):$WEB_PORT (and on Tailscale)" ;;
+      ok "Web view on port $WEB_PORT: http://localhost:$WEB_PORT here, and this Mac's Tailscale address from your other devices." ;;
     *) die "Usage: studio web [start|stop|serve]" ;;
   esac
 }

@@ -152,6 +152,16 @@ TYPESAFE_URL="http://127.0.0.1:9" STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router
 check "falls back to rules, says so"         grep -q 'unreachable.*used rules' "$LOG"
 check "rules escalate to the architect"      has "agent prompt omac-architect [studio relay · from @omac-worker-1, UNVERIFIED] blocked"
 
+echo "Web view answers the tailnet only"
+python3 - "$ROOT/ui/web.py" <<'PYT'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("web", sys.argv[1]); web = importlib.util.module_from_spec(spec); spec.loader.exec_module(web)
+assert web.allowed_client("127.0.0.1") and web.allowed_client("100.64.0.1") and not web.allowed_client("192.168.12.5") and not web.allowed_client("8.8.8.8")
+assert web.allowed_host("localhost:8790") and web.allowed_host("100.64.0.2:8790") and web.allowed_host("mac-mini-1.tail1234.ts.net") and not web.allowed_host("evil.example.com")
+print("ok")
+PYT
+check "loopback and tailnet only"           test "$?" = 0
+
 echo "Board renders"
 rc=0
 out=$(STUDIO_BOARD_ONCE=1 "$ROOT/bin/studio" board "$PROJECT" 2>&1) || rc=$?

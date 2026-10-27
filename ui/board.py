@@ -190,8 +190,9 @@ def count(d):
 
 def mem_free_mb():
     try:
-        vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
-        ps = int(subprocess.run(["sysctl", "-n", "hw.pagesize"], capture_output=True, text=True).stdout)
+        # Absolute paths: under launchd PATH may not include /usr/sbin.
+        vm = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=5).stdout
+        ps = int(subprocess.run(["/usr/sbin/sysctl", "-n", "hw.pagesize"], capture_output=True, text=True).stdout)
         pages = 0
         for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
             for ln in vm.splitlines():

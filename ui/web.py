@@ -7,11 +7,13 @@ phone) can watch the studio without installing anything.
 Serves:  /        the board, refreshing every 2 s
          /board   the board as text with ANSI colours turned into HTML
          /health  JSON: agents, last route, free memory
-Standard library only. Binds to every interface on purpose: the owner reaches it
-over Tailscale; nothing on it accepts input, it only shows state.
+Standard library only. Answers only loopback and Tailscale (100.64.0.0/10)
+addresses with a matching Host header: the owner's tailnet is the door, and the
+LAN, the internet and DNS-rebinding pages stay out. It accepts no input.
 """
 import argparse
 import html
+import ipaddress
 import json
 import os
 import re
@@ -70,6 +72,25 @@ tick();setInterval(tick,2000);
 </script></body></html>"""
 
 
+TAILNET = ipaddress.ip_network("100.64.0.0/10")
+ALLOWED_HOST_SUFFIXES = (".ts.net",)
+
+
+def allowed_client(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip in TAILNET
+
+
+def allowed_host(host):
+    host = (host or "").split(":")[0].strip("[]").lower()
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(ALLOWED_HOST_SUFFIXES):
+        return True
+    return allowed_client(host)
+
+
 def make_handler(a):
     ns = argparse.Namespace(studio=a.studio, herdr=a.herdr, kind=a.kind, arch_model=a.arch_model,
                             main_model=a.main_model, worker_model=a.worker_model)
@@ -89,6 +110,8 @@ def make_handler(a):
             self.wfile.write(data)
 
         def do_GET(self):
+            if not allowed_client(self.client_address[0]) or not allowed_host(self.headers.get("Host")):
+                return self.send(403, "forbidden", "text/plain")
             path, _, query = self.path.partition("?")
             if path == "/":
                 peer = ' · <a href="%s">%s</a>' % (html.escape(a.peer), html.escape(a.peer_name)) if a.peer else ""
@@ -123,7 +146,7 @@ def main():
     p.add_argument("--arch-model", default="opus")
     p.add_argument("--main-model", default="sonnet")
     p.add_argument("--worker-model", default="haiku")
-    p.add_argument("--port", type=int, default=8787)
+    p.add_argument("--port", type=int, default=8790)
     p.add_argument("--name", default="Dev Studio")
     p.add_argument("--peer", default="", help="URL of the other Mac's board, for the header link")
     p.add_argument("--peer-name", default="other Mac")
