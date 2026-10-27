@@ -12,6 +12,10 @@ export STUDIO_DATA=$HOME/.dev-studio STUDIO_CONF=$HOME/.dev-studio/studio.conf
 mkdir -p "$HOME/Developer/OMAC" "$STUDIO_DATA"
 git -C "$HOME/Developer/OMAC" init -q
 PROJECT=$HOME/Developer/OMAC
+# Stand-in claude and codex: `studio up` checks they exist, and CI has neither.
+mkdir -p "$T/stub"
+for exe in claude codex; do printf '#!/bin/sh\nexit 0\n' > "$T/stub/$exe"; chmod +x "$T/stub/$exe"; done
+export PATH="$T/stub:$PATH"
 printf '{"projects":{"/elsewhere":{"lastCost":1}}}' > "$HOME/.claude.json"
 pass=0; fail=0
 check() { # description, then a command that must succeed
@@ -60,9 +64,7 @@ check "then builds the team"                  has "--label omac-claude"
 
 echo "Codex team"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
-# A stand-in codex, so the test does not depend on it being installed (CI has none).
-mkdir -p "$T/stub"; printf '#!/bin/sh\nexit 0\n' > "$T/stub/codex"; chmod +x "$T/stub/codex"
-PATH="$T/stub:$PATH" STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
 check "workspace labelled omac-codex"        has "--label omac-codex"
 check "architect runs codex"                 has "codex -m gpt-6.1-sol"
 check "codex gets its role as first prompt"  has "omac-architect.md"
