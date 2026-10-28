@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  printf '%s\n' 'Send a task brief to a studio architect.'
+  exit 0
+fi
+# Hand a task to a studio's architect: dispatch <machine-id> <brief-file>
+# The architect name, herdr session, PATH prefix and studio folders come from the machine config
+# (field <id> architect, get herdr_session, remote-path, studio-dirs <id>). DISPATCH_SHOW=1 prints the
+# remote script instead of sending it.
+# The architect plans and delegates through JEV, so the work shows on Studio Routing.
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+CFG="$HERE/../lib/re_studio_config.py"
+t="$1"; f="$2"
+B=$(base64 -w0 < "$f")
+title=$(head -1 "$f" | cut -c1-70)
+SESSION=$(python3 "$CFG" get herdr_session)
+arch=$(python3 "$CFG" field "$t" architect 2>/dev/null || true)
+role=$(python3 "$CFG" field "$t" role 2>/dev/null || true)
+if [ -z "$arch" ] && [ "$role" = "hub" ]; then
+  arch=$(herdr --session "$SESSION" agent list 2>/dev/null | python3 -c "import json,sys;a=[x['name'] for x in json.load(sys.stdin)['result']['agents'] if str(x.get('name','')).endswith('architect')];print(a[0] if a else '')" || true)
+fi
+[ -n "$arch" ] || { echo "no architect for $t (set it in the machine config, or start one on the laptop)" >&2; exit 1; }
+if [ "$role" = "hub" ]; then
+  herdr --session "$SESSION" agent prompt "$arch" "$(cat "$f")" >/dev/null && echo "dispatched to $arch (laptop)"
+else
+  DIRS=$(python3 "$CFG" studio-dirs "$t")
+  [ -n "$DIRS" ] || DIRS="''"
+  RP=$(python3 "$CFG" remote-path)
+  REMOTE=$(printf 'export PATH=%s:$PATH\nfor d in %s; do\n  case $d in "~"/*) d=$HOME/${d#"~/"};; esac\n  if [ -d "$d" ]; then cd "$d"; break; fi\ndone\nP=$(echo %s | base64 -d)\nherdr --session %s agent prompt %s "$P" >/dev/null && echo "dispatched to %s (%s)"\n' "$RP" "$DIRS" "$B" "$SESSION" "$arch" "$arch" "$t")
+  if [ "${DISPATCH_SHOW:-}" = 1 ]; then
+    printf '%s\n' "$REMOTE"
+    exit 0
+  fi
+  printf '%s\n' "$REMOTE" | "$HERE/onmini" "$t"
+fi
+"$HERE/ev" "$t" "Dispatched: $title" task 2>/dev/null || true

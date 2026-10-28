@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"@PLUGIN_ID@","name":"Studio Routing","version":"1.0.0","author":"re-studio contributors","license":"MIT","description":"Live studio routing: working machines, opens the app","kinds":["bar-widget"],"activation":"on-demand","entryPoints":{"barWidget":"BarWidget.qml"},"barWidget":{"displayName":"Studio Routing","category":"AI","allowMultiple":false}}

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Print the version line.
+echo "fake studio 0.1.0"

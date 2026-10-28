@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  printf '%s\n' 'Log one Claude action to the studio events file.'
+  exit 0
+fi
+# Log one Claude action for the studio viewer:  ev <node> "text" [kind]
+# node: lap.member, lap.model, lap (the hub), <machine id>, <machine id>.studio-architect, ...   kind: claude|task|route|alert
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+STATE="$(PYTHONPATH="$HERE/../lib" python3 -c 'import re_studio_config as c; print(c.state_dir())')"
+mkdir -p "$STATE"
+python3 -c 'import json,sys,time; print(json.dumps({"t": time.time(), "to": sys.argv[1], "text": sys.argv[2], "kind": sys.argv[3] if len(sys.argv) > 3 else "claude"}))' "$@" >> "$STATE/claude-events.jsonl"

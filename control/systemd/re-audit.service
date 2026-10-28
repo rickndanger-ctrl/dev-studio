@@ -1,0 +1,11 @@
+[Unit]
+Description=RE studio auditor (a reviewer model checks the local models' Room tasks)
+
+[Service]
+ExecStart=@REPO@/bin/re-audit --loop 120
+Restart=always
+RestartSec=30
+Environment=PATH=@PATH@
+
+[Install]
+WantedBy=default.target

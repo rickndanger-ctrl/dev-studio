@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# git pre-push: scan what is about to leave this machine for private names, IPs and paths.
+# git feeds one line per ref on stdin: <local ref> <local sha> <remote ref> <remote sha>.
+#   - a delete sends nothing: skipped
+#   - a new remote ref: scan the commits THIS remote does not have yet (--not --remotes=<this remote>). Other
+#     remotes do not count: a private remote that already holds old history says nothing about a public one.
+#   - otherwise: scan <remote sha>..<local sha>
+# Tags are refs too, so they are scanned the same way. Any hit blocks the push (exit 1) and is printed.
+# A missing .privacy-words only warns: the generic rules still run, the owner's own names do not.
+# Skip once with `git push --no-verify` (you are then on your own).
+set -uo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO="$(dirname "$HERE")"
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo "$REPO")" || exit 1
+SCAN="$REPO/test/privacy.sh"
+[ -x "$SCAN" ] || { echo "pre-push: $SCAN not found or not executable; refusing to push unchecked" >&2; exit 1; }
+
+WORDS="${PRIVACY_WORDS:-$REPO/.privacy-words}"
+if [ ! -f "$WORDS" ]; then
+  {
+    echo "#############################################################################"
+    echo "# WARNING: no privacy word list at $WORDS"
+    echo "# Your own names (user, hosts, projects) are NOT being checked on this push."
+    echo "# Copy .privacy-words.example to .privacy-words and put your real names in it."
+    echo "#############################################################################"
+  } >&2
+fi
+
+REMOTE="${1:-}"      # remote name, or the URL when pushing to a bare URL
+NOT_THIS_REMOTE=()   # exclude only what the target remote has; an unnamed target gets a full scan
+if [ -n "$REMOTE" ] && git remote | grep -Fxq -- "$REMOTE"; then NOT_THIS_REMOTE=(--not "--remotes=$REMOTE"); fi
+zero() { case "$1" in *[!0]*) return 1 ;; *) return 0 ;; esac; }
+
+fail=0
+while read -r lref lsha rref rsha; do
+  [ -n "${lsha:-}" ] || continue
+  zero "$lsha" && continue                               # delete: nothing is sent
+  if zero "$rsha" || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+    args=(--revs "$lsha" ${NOT_THIS_REMOTE[@]+"${NOT_THIS_REMOTE[@]}"})      # new remote ref (or one we cannot see): what this remote lacks
+  else
+    args=(--revs "$rsha..$lsha")
+  fi
+  if ! out="$("$SCAN" "${args[@]}" 2>&1)"; then
+    fail=1
+    echo "pre-push: privacy hits in $lref -> $rref:" >&2
+    printf '%s\n' "$out" >&2
+  fi
+done
+if [ "$fail" -ne 0 ]; then
+  {
+    echo "pre-push: push blocked: the commits above carry private data, and history cannot be edited in place."
+    echo "pre-push: to publish, build a clean copy of the tree with bin/publish-export and push that instead."
+    echo "pre-push: (or push with --no-verify at your own risk, after checking by hand.)"
+  } >&2
+fi
+exit "$fail"

@@ -1,0 +1,30 @@
+# Fake and documented values the privacy guard lets through.
+# 'TOKEN' applies everywhere; 'PATH :: TOKEN' applies only in that exact repo-relative file.
+# Tokens are exact and case-sensitive, and are masked out of a line before any check (the word list included).
+# An entry equal to a word-list entry, or an e-mail address, makes the guard exit 2.
+
+# 100.64.0.0: the base address of the Tailscale CGNAT range, shown in the docs as an example of the range
+100.64.0.0
+# 100.64.0.1: an example tailnet peer address in the dev-studio fixtures and docs
+100.64.0.1
+# 100.64.0.2: a second example tailnet peer address, so multi-machine examples stay fake
+100.64.0.2
+# 192.168.12.5: an example home-LAN address used in the docs and fixtures
+192.168.12.5
+# tail1234.ts.net: an example MagicDNS name used in the docs and fixtures, not a real machine
+tail1234.ts.net
+# rickndanger-ctrl/dev-studio: the public repo slug, shown in the README URL and the HANDOFF line
+rickndanger-ctrl/dev-studio
+
+# examples/camera-motion/camera_motion/test_privacy.py: a Mac home path, a fake user, in that example's test
+examples/camera-motion/camera_motion/test_privacy.py :: /Users/alice/
+# examples/camera-motion/camera_motion/test_privacy.py: a Linux home path, a fake user, in that example's test
+examples/camera-motion/camera_motion/test_privacy.py :: /home/bob/
+# examples/camera-motion/camera_motion/test_privacy.py: a private LAN address used as a fake camera host
+examples/camera-motion/camera_motion/test_privacy.py :: 192.168.1.5
+# examples/camera-motion/camera_motion/test_privacy.py: a private LAN address used as a fake gateway
+examples/camera-motion/camera_motion/test_privacy.py :: 10.0.0.2
+# examples/camera-motion/camera_motion/test_privacy.py: a private address in the 172.16/12 range, a fake camera
+examples/camera-motion/camera_motion/test_privacy.py :: 172.20.1.1
+# examples/camera-motion/camera_motion/test_privacy.py: a public-looking address in the tailnet range, a fake peer
+examples/camera-motion/camera_motion/test_privacy.py :: 100.100.1.1

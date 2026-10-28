@@ -1,0 +1,11 @@
+{
+  "_comment": "Routing fixture for test/test_config.py: direct route, a second route through a hop, a disabled studio.",
+  "herdr_session": "ci-session",
+  "viewer_port": 8799,
+  "machines": [
+    {"id": "lap", "label": "Laptop", "role": "hub", "ssh": [], "project": "~/Projects/re-studio"},
+    {"id": "m1", "label": "Studio A", "role": "studio", "ssh": ["host-a"], "project": "~/DevStudio", "architect": "studio-architect"},
+    {"id": "m2", "label": "Studio B", "role": "studio", "ssh": ["host-b"], "ssh_alt": [["host-a", "host-b-internal"]], "project": "~/DevStudio", "architect": "studio-architect"},
+    {"id": "m3", "label": "Studio C", "role": "studio", "enabled": false, "ssh": ["host-c"], "project": "~/DevStudio", "architect": "studio-architect"}
+  ]
+}

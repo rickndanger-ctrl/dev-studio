@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Compact status for the Studio Routing bar widget: reads the viewer's /api/studio and prints
+{up, working, total, tip, local_today} so the Omarchy bar can show a live working-count, a tooltip, and the
+local-model work done today ({"jobs", "chars", "paid_chars", "pct"}; pct = estimated output share, None if unknown)."""
+import json, os, sys, urllib.request
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+    print('Read the Studio Routing server status and print JSON for the bar widget.')
+    sys.exit(0)
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import re_studio_config as cfg
+
+PORT = cfg.get("viewer_port", 8765)
+
+try:
+    d = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/studio", timeout=2))
+    machines = d.get("machines", [])
+    working = sum(1 for m in machines if m.get("busy"))
+    tip = "\n".join(("● " if m.get("busy") else "○ ") + f'{m["name"]}: {m["line"]}' for m in machines)
+    local = d.get("local_today") or {"jobs": 0, "chars": 0}
+    print(json.dumps({"up": True, "working": working, "total": len(machines), "tip": tip or "No machines online",
+                      "local_today": local}))
+except Exception:
+    print(json.dumps({"up": False, "working": 0, "total": 0, "tip": "Studio Routing server is not running",
+                      "local_today": {"jobs": 0, "chars": 0, "pct": None}}))

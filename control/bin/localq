@@ -1,0 +1,550 @@
+#!/usr/bin/env python3
+"""localq: a queue of small jobs for the local models, with a gate in front and a review behind.
+
+  localq add <machine> <job.json>        queue a job (prompt + inputs under 6 KB, a known kind, a new id)
+  localq draft <kind> <input-file> [--max-chars N]  run one laptop draft and print its result
+    kinds: commit, testcases, review-notes, changelog, status, brief, docstrings
+  localq allow <m1|m2> <hours>           approve local work on a Mini for a while
+  localq deny <m1|m2>                    take that approval back
+  localq run <machine>                   gate first; if blocked every queued job gets the reason and nothing runs;
+                                         otherwise the jobs run one at a time
+  localq results [--pending] [--json]    every job; --pending = done but not yet reviewed
+  localq review <id> accept|fix|reject [note] [--by who]
+  localq report [--since HH:MM|"YYYY-MM-DD HH:MM"] [--json]  one screen for today or the window: jobs by kind and
+                                         status, verdicts, output share (estimate), five slowest jobs
+  localq stats                           jobs, characters, seconds and review verdicts, per day and total;
+                                         today also the output share (estimate) against the paid mail
+
+Contract: docs/LOCALQ-CONTRACT.md. State lives under the configured state_dir (localq/jobs, localq/out,
+localq/approvals.json, localq/stats.json; an old state/localq-stats.json is moved there on the first write).
+The gate (lib/localq_gate.py) and the model runners
+(lib/localq_models.py) are imported only when needed; `run` never reaches a runner unless the gate said yes.
+Standard library only.
+"""
+import json, os, re, sys, time, uuid
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import re_studio_config as cfg
+import localq_share
+import localq_report
+
+DRAFT_PROMPTS = {
+    "commit": "Write one commit subject under 72 characters, then a blank line and 1-3 body lines. Use only the supplied task and diff summary.",
+    "testcases": "Write a numbered list of test cases, one line each, for the supplied task and interface.",
+    "review-notes": "Write a short review summary for the architect from the supplied verdict lines.",
+    "changelog": "Write 1-3 user-facing changelog lines from the supplied task and commit subjects.",
+    "status": "Write one .studio/status.md line for the supplied teammate and their current work.",
+    "brief": "Turn the supplied bullet notes into one plain-text worker brief under 1200 characters, with no Markdown headings. Start with 'Task: ...', then include the goal, files to touch, rules (bash 3.2 safe; no heredoc or apostrophes inside $( ); tests by who you are), and how to check completion. End with 'commit, reply with the hash'. Use only the supplied notes.",
+    "docstrings": "Return the supplied code with docstrings and short comments added. Keep every existing code line unchanged and in the same order. Return only the code, without Markdown fences. The worker will diff the result and keep only comment and docstring lines.",
+}
+KINDS = ("draft", "summarize", "describe", "testcases", "review-notes", "commit", "changelog", "status", "brief", "docstrings")
+VERDICTS = ("accept", "fix", "reject")
+MAX_INPUT = 6144
+DEFAULT_MAX_CHARS = 4000
+ID_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+STAT_KEYS = ("jobs", "chars_in", "chars_out", "seconds", "accepted", "fixed", "rejected")
+VERDICT_KEY = {"accept": "accepted", "fix": "fixed", "reject": "rejected"}
+
+
+class Refused(Exception):
+    """A request localq will not carry out; the message says why."""
+
+
+def die(msg, code=2):
+    print(f"localq: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------- paths and files ----------
+
+def root():
+    return os.path.join(cfg.state_dir(), "localq")
+
+
+def jobs_dir(mid):
+    return os.path.join(root(), "jobs", mid)
+
+
+def out_dir():
+    return os.path.join(root(), "out")
+
+
+def stats_path():
+    return os.path.join(root(), "stats.json")
+
+
+def legacy_stats_path():
+    """Where the stats file lived before job local-more-2: directly under state/. Read only while it still exists."""
+    return os.path.join(cfg.state_dir(), "localq-stats.json")
+
+
+def read_json(path, default=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_atomic(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def save_job(job):
+    write_atomic(os.path.join(jobs_dir(job["machine"]), job["id"] + ".json"), json.dumps(job, indent=2) + "\n")
+
+
+def all_jobs():
+    out = []
+    base = os.path.join(root(), "jobs")
+    for mid in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        for name in sorted(os.listdir(os.path.join(base, mid))):
+            if name.endswith(".json"):
+                job = read_json(os.path.join(base, mid, name))
+                if isinstance(job, dict) and job.get("id"):
+                    job.setdefault("machine", mid)
+                    out.append(job)
+    return out
+
+
+def find_job(jid):
+    for job in all_jobs():
+        if job["id"] == jid:
+            return job
+    return None
+
+
+def machine(mid):
+    try:
+        m = cfg.machine(mid)
+    except KeyError:
+        raise Refused(f"no machine {mid!r} in the config")
+    if m.get("enabled") is False:
+        raise Refused(f"machine {mid} is disabled in the config")
+    return m
+
+
+def need_mini(mid):
+    if machine(mid).get("role") == "hub":
+        raise Refused(f"{mid} is the hub: local work there needs no approval")
+
+
+def gate():
+    import localq_gate
+    return localq_gate
+
+
+# ---------- stats ----------
+
+def today(t=None):
+    return time.strftime("%Y-%m-%d", time.localtime(t))
+
+
+def migrate_stats():
+    """Move the old stats file into localq/ once, on the first write. If the move is refused (a sandbox that may
+    write only localq/ cannot remove a file from state/), leave the old file where it is: readers prefer the new one."""
+    old, new = legacy_stats_path(), stats_path()
+    if os.path.exists(old) and not os.path.exists(new):
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        try:
+            os.replace(old, new)
+        except OSError:
+            pass
+
+
+def read_stats():
+    """The stats file: the new path, or the old one while it still exists. Reading never moves anything."""
+    for path in (stats_path(), legacy_stats_path()):
+        if os.path.exists(path):
+            return read_json(path, {}) or {}
+    return {}
+
+
+def bump(day, mid, **delta):
+    migrate_stats()
+    stats = read_stats()
+    for bucket in (stats.setdefault("days", {}).setdefault(day, {}).setdefault(mid, {}),
+                   stats.setdefault("totals", {}).setdefault(mid, {})):
+        for k in STAT_KEYS:
+            bucket.setdefault(k, 0)
+        for k, v in delta.items():
+            bucket[k] = round(bucket[k] + v, 3) if k == "seconds" else bucket[k] + v
+    write_atomic(stats_path(), json.dumps(stats, indent=2) + "\n")
+
+
+# ---------- add ----------
+
+def resolve_output(value, jid):
+    """The result file must sit under <state_dir>/localq/out/. 'state/...' means the state folder."""
+    base = os.path.realpath(out_dir())
+    if not value:
+        return os.path.join(base, jid + ".md")
+    p = os.path.expanduser(value)
+    if not os.path.isabs(p):
+        p = os.path.join(cfg.state_dir(), p[len("state/"):]) if p.startswith("state/") else os.path.abspath(p)
+    parent = os.path.realpath(os.path.dirname(p))
+    full = os.path.join(parent, os.path.basename(p))
+    if not (full + os.sep).startswith(base + os.sep) or full == base:
+        raise Refused(f"output must be under {os.path.join('<state_dir>', 'localq', 'out')}/")
+    return full
+
+
+def cmd_add(args):
+    if len(args) != 2:
+        raise Refused("usage: localq add <machine> <job.json>")
+    mid, path = args
+    machine(mid)
+    try:
+        with open(path) as f:
+            spec = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Refused(f"cannot read job file {path}: {e}")
+    job = create_job(mid, spec)
+    print(f"queued {job['id']} on {mid} ({job['kind']}, {job['chars_in']} chars in)")
+
+
+def create_job(mid, spec):
+    """Validate and queue a job using the same rules for add and draft."""
+    machine(mid)
+    if not isinstance(spec, dict):
+        raise Refused("the job file must hold one JSON object")
+    jid, kind = spec.get("id"), spec.get("kind")
+    prompt, inputs = spec.get("prompt"), spec.get("inputs", "")
+    if not isinstance(jid, str) or not ID_RX.match(jid):
+        raise Refused("id must be 1-64 characters: letters, digits, dot, dash, underscore")
+    if kind not in KINDS:
+        raise Refused(f"unknown kind {kind!r}; use one of {', '.join(KINDS)}")
+    if not isinstance(prompt, str) or not prompt.strip() or not isinstance(inputs, str):
+        raise Refused("prompt (non-empty text) is required; inputs, if given, must be text")
+    if len(prompt) + len(inputs) > MAX_INPUT:
+        raise Refused(f"prompt + inputs are {len(prompt) + len(inputs)} characters; the limit is {MAX_INPUT}")
+    max_chars = spec.get("max_chars", DEFAULT_MAX_CHARS)
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1:
+        raise Refused("max_chars must be a positive whole number")
+    if find_job(jid):
+        raise Refused(f"id {jid!r} is already used")
+    job = {"id": jid, "machine": mid, "kind": kind, "prompt": prompt, "inputs": inputs, "max_chars": max_chars,
+           "output": resolve_output(spec.get("output"), jid), "reviewer": spec.get("reviewer", "haiku"),
+           "status": "queued", "reason": "", "queued_at": time.time(), "chars_in": len(prompt) + len(inputs)}
+    save_job(job)
+    return job
+
+
+# ---------- allow / deny ----------
+
+def cmd_allow(args):
+    if len(args) != 2:
+        raise Refused("usage: localq allow <m1|m2> <hours>")
+    mid = args[0]
+    need_mini(mid)
+    try:
+        hours = float(args[1])
+    except ValueError:
+        raise Refused("hours must be a number")
+    if not 0 < hours <= 24:
+        raise Refused("hours must be more than 0 and at most 24")
+    gate().allow(mid, hours, os.environ.get("LOCALQ_WHO", "owner"))
+    a = gate().approval(mid) or {}
+    print(f"local work on {mid} allowed for {hours:g} h" + (f", until {time.strftime('%H:%M', time.localtime(a['until']))}" if a.get("until") else ""))
+
+
+def cmd_deny(args):
+    if len(args) != 1:
+        raise Refused("usage: localq deny <m1|m2>")
+    need_mini(args[0])
+    gate().deny(args[0])
+    print(f"local work on {args[0]} denied")
+
+
+# ---------- run ----------
+
+def prompt_text(job):
+    text = f"Task kind: {job['kind']}. Reply with the result text only.\n\n{job['prompt']}"
+    return text + (f"\n\n---\n{job['inputs']}" if job.get("inputs") else "")
+
+
+def lock_path(mid):
+    return os.path.join(root(), f"run-{mid}.lock")
+
+
+def take_lock(mid):
+    os.makedirs(root(), exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path(mid), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return
+        except FileExistsError:
+            with open(lock_path(mid)) as f:
+                pid = f.read().strip() or "0"
+            try:
+                os.kill(int(pid), 0)
+            except (ValueError, ProcessLookupError):
+                os.unlink(lock_path(mid))      # the run that held it is gone
+                continue
+            except PermissionError:
+                pass
+            raise Refused(f"a run on {mid} is already going (pid {pid})")
+
+
+def cmd_run(args, only=None, quiet=False, locked=False):
+    if len(args) != 1:
+        raise Refused("usage: localq run <machine>")
+    mid = args[0]
+    m = machine(mid)
+    mini = m.get("role") != "hub"
+    todo = sorted((j for j in all_jobs() if j["machine"] == mid and j.get("status") in ("queued", "blocked")
+                   and (only is None or j["id"] == only)),
+                  key=lambda j: j.get("queued_at", 0))
+    if not todo:
+        print(f"nothing queued on {mid}")
+        return 0
+    ok, reason = gate().check(mid)                     # the gate comes first: nothing below runs when it says no
+    if not ok:
+        for j in todo:
+            j.update(status="blocked", reason=reason)
+            save_job(j)
+        print(f"blocked: {reason} ({len(todo)} job(s) held)", file=sys.stderr)
+        return 3
+    import localq_models                               # only now: a blocked run never even loads a runner
+    if not locked:
+        take_lock(mid)
+    failed = 0
+    try:
+        for j in todo:
+            if mini and not gate().approval(mid):     # the approval window can close during a long run
+                for rest in todo[todo.index(j):]:
+                    rest.update(status="blocked", reason="approval expired during the run")
+                    save_job(rest)
+                print("blocked: approval expired during the run", file=sys.stderr)
+                return 3
+            j.update(status="running", reason="", started_at=time.time())
+            save_job(j)
+            try:
+                res = localq_models.run(mid, prompt_text(j), j["max_chars"])
+                text = res["text"]
+                write_atomic(j["output"], text if text.endswith("\n") else text + "\n")
+                j.update(status="done", finished_at=time.time(), seconds=round(float(res.get("seconds", 0)), 3),
+                         chars_out=len(text), model=res.get("model", ""))
+                bump(today(), mid, jobs=1, chars_in=j["chars_in"], chars_out=len(text), seconds=j["seconds"])
+                if not quiet:
+                    print(f"done {j['id']} ({len(text)} chars, {j['seconds']:g}s)")
+            except Exception as e:                    # RunnerError(reason) or anything else: record it, go on
+                failed += 1
+                j.update(status="failed", reason=str(e)[:300], finished_at=time.time())
+                print(f"failed {j['id']}: {j['reason']}", file=sys.stderr)
+            save_job(j)
+    finally:
+        if not locked:
+            try:
+                os.unlink(lock_path(mid))
+            except OSError:
+                pass
+    return 1 if failed else 0
+
+
+# ---------- draft ----------
+
+def cmd_draft(args):
+    usage = "usage: localq draft <kind> <input-file> [--max-chars N]"
+    if len(args) not in (2, 4) or (len(args) == 4 and args[2] != "--max-chars"):
+        raise Refused(usage)
+    kind, path = args[:2]
+    if kind not in DRAFT_PROMPTS:
+        raise Refused(f"unknown draft kind {kind!r}; use one of {', '.join(DRAFT_PROMPTS)}")
+    max_chars = DEFAULT_MAX_CHARS
+    if len(args) == 4:
+        try:
+            max_chars = int(args[3])
+        except ValueError:
+            raise Refused("max-chars must be a positive whole number")
+        if max_chars < 1:
+            raise Refused("max-chars must be a positive whole number")
+    try:
+        with open(path, encoding="utf-8") as f:
+            inputs = f.read()
+    except (OSError, UnicodeError) as e:
+        raise Refused(f"cannot read input file {path}: {e}")
+    if not inputs.strip():
+        raise Refused("input file must contain text")
+    if machine("lap").get("role") != "hub":
+        raise Refused("lap must be the laptop hub")
+    take_lock("lap")
+    try:
+        jid = f"{kind}-{uuid.uuid4().hex}"
+        job = create_job("lap", {"id": jid, "kind": kind, "prompt": DRAFT_PROMPTS[kind],
+                                 "inputs": inputs, "max_chars": max_chars, "reviewer": "codex"})
+        print(jid, file=sys.stderr)
+        rc = cmd_run(["lap"], only=jid, quiet=True, locked=True)
+        if rc == 3:
+            return 2
+        if rc:
+            return 1
+        try:
+            with open(job["output"], encoding="utf-8") as f:
+                sys.stdout.write(f.read())
+        except OSError as e:
+            raise Refused(f"cannot read result for {jid}: {e}")
+        return 0
+    finally:
+        try:
+            os.unlink(lock_path("lap"))
+        except OSError:
+            pass
+
+
+# ---------- results / review / stats ----------
+
+def cmd_results(args):
+    pending = "--pending" in args
+    as_json = "--json" in args
+    rest = [a for a in args if a not in ("--pending", "--json")]
+    if rest:
+        raise Refused("usage: localq results [--pending] [--json]")
+    rows = [j for j in all_jobs() if not pending or (j.get("status") == "done" and not j.get("review"))]
+    rows.sort(key=lambda j: j.get("queued_at", 0))
+    if as_json:
+        print(json.dumps([{k: j.get(k) for k in ("id", "machine", "kind", "status", "reason", "output", "review", "chars_out")}
+                          for j in rows], indent=2))
+        return
+    if not rows:
+        print("no pending results" if pending else "no jobs")
+        return
+    for j in rows:
+        rv = (j.get("review") or {}).get("verdict", "")
+        extra = j.get("reason") or (j.get("output") if j.get("status") == "done" else "")
+        print(f"{j['id']:<24} {j['machine']:<4} {j['kind']:<13} {j.get('status', '?'):<8} {rv:<7} {extra}".rstrip())
+
+
+def cmd_review(args):
+    by = None
+    if "--by" in args:
+        i = args.index("--by")
+        if i + 1 >= len(args):
+            raise Refused("--by needs a name")
+        by = args[i + 1]
+        args = args[:i] + args[i + 2:]
+    if len(args) < 2 or args[1] not in VERDICTS:
+        raise Refused("usage: localq review <id> accept|fix|reject [note] [--by who]")
+    jid, verdict, note = args[0], args[1], " ".join(args[2:])
+    job = find_job(jid)
+    if not job:
+        raise Refused(f"no job {jid!r}")
+    if job.get("status") != "done":
+        raise Refused(f"job {jid} is {job.get('status')}; only a done job can be reviewed")
+    old = job.get("review")
+    if old:
+        bump(today(old.get("at")), job["machine"], **{VERDICT_KEY[old["verdict"]]: -1})   # replace the earlier verdict
+    now = time.time()
+    job["review"] = {"verdict": verdict, "by": by or job.get("reviewer", "haiku"), "note": note, "at": now}
+    save_job(job)
+    bump(today(now), job["machine"], **{VERDICT_KEY[verdict]: 1})
+    print(f"{jid}: {verdict}" + (f" ({note})" if note else ""))
+
+
+def print_line(mid, table):
+    s = {k: table.get(k, 0) for k in STAT_KEYS}
+    reviewed = s["accepted"] + s["fixed"] + s["rejected"]
+    rate = f", {100 * s['accepted'] // reviewed}% accepted" if reviewed else ""
+    print(f"  {mid}: {s['jobs']} jobs, {s['chars_in']} chars in, {s['chars_out']} out, {s['seconds']:g}s; "
+          f"accepted {s['accepted']}, fixed {s['fixed']}, rejected {s['rejected']}{rate}")
+
+
+def print_share(day, today_table):
+    """Today's output share (estimate): local job output characters against the laptop studio's delivered mail today."""
+    output = sum(int(m.get("chars_out", 0)) for m in today_table.values())
+    paid = localq_share.paid_today(day, localq_share.mail_dir())
+    if paid is None:
+        print("  output share (estimate): unknown, no laptop project in the config")
+        return
+    sh = localq_share.share(output, paid)
+    pct = "n/a" if sh["pct"] is None else f"{sh['pct']}%"
+    print(f"  output share (estimate): {pct} of today's text; local output {output} chars, "
+          f"paid {paid['chars']} chars in {paid['messages']} messages")
+    for label, table in (("paid in by sender", paid["by_sender"]), ("paid out by recipient", paid["by_recipient"])):
+        if table:
+            print(f"    {label}: " + ", ".join(f"{k} {v}" for k, v in sorted(table.items())))
+
+
+def cmd_stats(args):
+    if args:
+        raise Refused("usage: localq stats")
+    stats = read_stats()
+    day = today()
+    today_table = (stats.get("days") or {}).get(day, {})
+    print("today " + day)
+    if not today_table:
+        print("  (no jobs yet)")
+    for mid in sorted(today_table):
+        print_line(mid, today_table[mid])
+    print_share(day, today_table)
+    print("total")
+    totals = stats.get("totals") or {}
+    if not totals:
+        print("  (no jobs yet)")
+    for mid in sorted(totals):
+        print_line(mid, totals[mid])
+    queued = [j for j in all_jobs() if j.get("status") in ("queued", "blocked")]
+    print(f"waiting: {len(queued)}")
+
+
+def parse_since(text, now=None):
+    """Parse a --since value into a Unix time: "HH:MM" means today, or "YYYY-MM-DD HH:MM"; raises Refused otherwise."""
+    now = time.time() if now is None else now
+    for fmt in ("%Y-%m-%d %H:%M", "%H:%M"):
+        try:
+            parsed = time.strptime(text, fmt)
+        except ValueError:
+            continue
+        if fmt == "%H:%M":
+            lt = time.localtime(now)
+            parsed = time.strptime(f"{lt.tm_year}-{lt.tm_mon}-{lt.tm_mday} {parsed.tm_hour}:{parsed.tm_min}", "%Y-%m-%d %H:%M")
+        return time.mktime(parsed)
+    raise Refused('--since wants HH:MM or "YYYY-MM-DD HH:MM"')
+
+
+def cmd_report(args):
+    """Handle `localq report`: print the window report (today by default) as text or --json."""
+    usage = 'usage: localq report [--since HH:MM|"YYYY-MM-DD HH:MM"] [--json]'
+    as_json = "--json" in args
+    rest = [a for a in args if a != "--json"]
+    if rest and rest[0] == "--since" and len(rest) == 2:
+        since = parse_since(rest[1])
+    elif not rest:
+        since = time.mktime(time.strptime(today(), "%Y-%m-%d"))
+    else:
+        raise Refused(usage)
+    paid = localq_share.paid_today(today(), localq_share.mail_dir(), since)
+    report = localq_report.build(all_jobs(), paid, since)
+    print(json.dumps(report, indent=2) if as_json else localq_report.render(report))
+
+
+COMMANDS = {"report": cmd_report, "draft": cmd_draft, "add": cmd_add, "allow": cmd_allow, "deny": cmd_deny, "run": cmd_run, "results": cmd_results,
+            "review": cmd_review, "stats": cmd_stats}
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        return COMMANDS[argv[0]](argv[1:]) or 0
+    except Refused as e:
+        print(f"localq: {e}", file=sys.stderr)
+        return 1 if argv[0] == "draft" else 2
+    except OSError as e:
+        if argv[0] != "draft":
+            raise
+        print(f"localq: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

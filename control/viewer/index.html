@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studio Routing</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #121722; --panel-edge: #232b3b; --text: #d8dee9; --dim: #7a8499; --faint: #3a4356;
+    --claude: #e8a87c; --jev: #b48ead; --local: #88c0d0; --haiku: #a3be8c; --alert: #bf616a; --done: #81a1c1;
+    --step: #5e81ac; --route: #b48ead; --task: #e8a87c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace; overflow: hidden; }
+  .app { display: grid; grid-template-columns: 1fr 460px; grid-template-rows: 44px 1fr; height: 100%; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; padding: 0 18px;
+    border-bottom: 1px solid var(--panel-edge); }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .06em; }
+  header .live { color: var(--dim); }
+  header .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--alert); margin-right: 6px; }
+  header .dot.on { background: var(--haiku); box-shadow: 0 0 8px var(--haiku); }
+  header .spacer { flex: 1; }
+  #stage { width: 100%; height: 100%; display: block; }
+  aside { border-left: 1px solid var(--panel-edge); min-width: 0; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+  aside h2 { font-size: 12px; color: var(--dim); margin: 12px 14px 6px; letter-spacing: .08em; text-transform: uppercase; }
+  #feed { list-style: none; margin: 0; padding: 0 10px 10px; overflow-y: auto; flex: 1; }
+  #feed li { padding: 7px 8px; border-radius: 6px; margin-bottom: 4px; background: var(--panel); border-left: 3px solid var(--faint);
+    animation: slide .35s ease-out; }
+  #feed li .meta { color: var(--dim); font-size: 11px; }
+  #feed li .txt { word-break: break-word; white-space: pre-wrap; }
+  #feed li.step { padding: 4px 8px; background: transparent; }
+  #feed li.step .txt { color: var(--dim); font-size: 12px; }
+  #feed li.say .txt, #feed li.route .txt, #feed li.alert .txt { color: var(--text); font-size: 13px; }
+  #feed li.say { background: #18202e; }
+  @keyframes slide { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+  .panel-title { font-size: 14px; font-weight: 700; fill: var(--text); letter-spacing: .04em; }
+  .panel-sub { font-size: 11px; fill: var(--dim); }
+  .node-label { font-size: 11px; fill: var(--text); text-anchor: middle; }
+  .node-sub { font-size: 10px; fill: var(--dim); text-anchor: middle; }
+  .task { font-size: 11px; fill: var(--text); }
+  .task.dim { fill: var(--dim); }
+  @media (prefers-reduced-motion: reduce) { #feed li { animation: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>STUDIO ROUTING</h1>
+    <span class="live"><span class="dot" id="conn"></span><span id="connText">connecting</span></span>
+    <span class="live" id="claudeLast"></span>
+    <span class="live" id="localWork"></span>
+    <span class="spacer"></span>
+    <span class="live" id="clock"></span>
+  </header>
+  <svg id="stage" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <radialGradient id="claudeGlow"><stop offset="0" stop-color="#e8a87c" stop-opacity=".55"/><stop offset="1" stop-color="#e8a87c" stop-opacity="0"/></radialGradient>
+      <radialGradient id="jevGlow"><stop offset="0" stop-color="#b48ead" stop-opacity=".45"/><stop offset="1" stop-color="#b48ead" stop-opacity="0"/></radialGradient>
+      <filter id="blur"><feGaussianBlur stdDeviation="3"/></filter>
+    </defs>
+    <g id="links"></g>
+    <g id="panels"></g>
+    <g id="routes"></g>
+    <g id="nodes"></g>
+    <g id="fx"></g>
+  </svg>
+  <aside>
+    <h2>Live feed</h2>
+    <ul id="feed"></ul>
+  </aside>
+</div>
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const KIND = { say: "--claude", route: "--route", step: "--step", task: "--task", claude: "--claude", done: "--done",
+               alert: "--alert", audit: "--haiku", status: "--dim", info: "--dim" };
+// Panels come from state.layout [{id,label,role,enabled}], one per machine in config order; the hub is drawn as "lap" inside the page.
+// Node names (state.labels) and the audit panel (state.audit, absent = hidden) also come from the config.
+const FALLBACK_LAYOUT = [{ id: "lap", label: "Hub", role: "hub", enabled: true }];
+const appName = () => (S && S.audit && S.audit.app) || "Local agent";
+const lbl = (id, dflt) => ((S && S.labels) || {})[id] || dflt;
+let PANELS = {};       // id -> {x, y, w, h, title, sub}, rebuilt by layoutPanels()
+let STUDIOS = [];      // ids of studio panels drawn in the grid (enabled)
+let SPARE = [];        // ids of disabled studios, drawn small and dashed under the laptop
+let LABELS = {};
+let CLAUDE = { x: 600, y: 400 };
+let pos = {};          // node id -> {x, y}
+let S = null;          // last state
+
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function role(n) { const m = (n || "").match(/(architect|main|messenger|worker-\d+|builder-\d+)$/); return m ? m[1] : (n || "").replace(/^studio-/, ""); }
+function clip(s, n) { s = s || ""; return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function hub(mid) { const p = PANELS[mid]; return { x: p.x + p.w / 2, y: p.y + (p.h < 300 ? p.h / 2 : 266) }; }   // small spare panels: their middle
+// Agents around the JEV hub; those at the top get their labels above so they stay clear of the routing band.
+function drawTeam(mid, agents, h) {
+  agents.forEach((a, i) => {
+    const ang = -Math.PI / 2 + (i / Math.max(agents.length, 1)) * Math.PI * 2;
+    const p = { x: h.x + Math.cos(ang) * 120, y: h.y + Math.sin(ang) * 75 };
+    const place = Math.sin(ang) < -0.8 ? "above" : "";
+    pos[`${mid}.${a.name}`] = p;
+    line(links, h, p, css("--jev"), .35);
+    if (a.status === "idle" || a.status === "unknown") { node(nodes, p, 15, css("--faint"), role(a.name), "standing by", false, null, null, place); return; }
+    node(nodes, p, 17, statusColor(a.status), role(a.name), a.status, a.status === "working", null, null, place);
+  });
+}
+// The JEV hub with its glow; the label sits beside it, in the direction farthest from every line to an agent.
+function jevHub(h, n, router) {
+  el("circle", { cx: h.x, cy: h.y, r: 46, fill: "url(#jevGlow)" }, nodes);
+  node(nodes, h, 22, css("--jev"), "", "", false, null, null, "none");
+  const angs = Array.from({ length: n }, (_, i) => -Math.PI / 2 + (i / Math.max(n, 1)) * Math.PI * 2);
+  let best = Math.PI / 4, gap = -1;
+  for (const a of [Math.PI / 4, 3 * Math.PI / 4, -Math.PI / 4, -3 * Math.PI / 4, 0, Math.PI, Math.PI / 2, -Math.PI / 2]) {   // lower right first
+    const d = Math.min(...angs.map(x => { const t = Math.abs(a - x) % (2 * Math.PI); return Math.min(t, 2 * Math.PI - t); }), Math.PI);
+    if (d > gap + 1e-6) { gap = d; best = a; }
+  }
+  const c = Math.cos(best), sn = Math.sin(best), anchor = c > 0.3 ? "start" : c < -0.3 ? "end" : "middle";
+  const x = h.x + c * 34, y = h.y + sn * 34 + 4;
+  el("text", { x, y, class: "node-label", "text-anchor": anchor }, nodes, "JEV");
+  el("text", { x, y: y + 13, class: "node-sub", "text-anchor": anchor }, nodes, router || "router");
+}
+// Persistent JEV routing band: the last 3 relays, same on every panel.
+function drawBand(P, commsIn) {
+  const comms = (commsIn || []).slice(-3);
+  el("text", { x: P.x + 16, y: P.y + 80, class: "panel-sub" }, nodes, comms.length ? "JEV ROUTING — who relayed to whom" : "JEV · no messages yet").style.fill = css("--jev");
+  comms.forEach((c, i) => {
+    const dropped = c.to === "dropped" || c.decision === "drop";
+    el("text", { x: P.x + 16, y: P.y + 96 + i * 16, class: "task" }, nodes, clip(`${c.from} → ${dropped ? "✕ dropped" : c.to}: ${c.text}`, 58)).style.fill = dropped ? css("--dim") : css("--text");
+  });
+}
+
+function statusColor(s) {
+  return { working: css("--claude"), blocked: css("--alert"), done: css("--done"), idle: css("--haiku"),
+           running: css("--claude"), review: css("--done"), failed: css("--alert") }[s] || css("--dim");
+}
+
+// Compact when the Room is idle: the task list only takes room while something runs.
+function lapHeight() {
+  const L = S.laptop || {}, proj = (L.projects || [])[0];
+  const running = proj && proj.tasks.find(t => t.status === "running");
+  // the LOCAL WORK rows sit 36px below the Room (26 more when the auditor line shows): up to four rows, then a margin
+  if (!running) return 608;
+  const lines = Math.min(6, proj.tasks.length) * 22 + (proj.tasks.some(t => t.status === "running" && t.step) ? 17 : 0);
+  return 608 + lines + ((L.auditor || {}).summary ? 26 : 0);
+}
+// Laptop panel on the left, enabled studios in a grid on the right (any count), disabled ones small under the laptop.
+// The drawing keeps a fixed panel size and grows the viewBox, so more studios just shrink the whole picture.
+function layoutPanels() {
+  const layout = (S.layout && S.layout.length) ? S.layout : FALLBACK_LAYOUT;
+  LABELS = {}; PANELS = {}; STUDIOS = []; SPARE = [];
+  for (const m of layout) {
+    LABELS[m.role === "hub" ? "lap" : m.id] = m.label || m.id;
+    if (m.role !== "hub") (m.enabled === false ? SPARE : STUDIOS).push(m.id);
+  }
+  PANELS.lap = { x: 30, y: 30, w: 420, h: lapHeight(), title: (LABELS.lap || "Hub").toUpperCase(), sub: `${appName()} · local models` };
+  const spareY = 30 + PANELS.lap.h + 18;
+  SPARE.forEach((id, i) => { PANELS[id] = { x: 30, y: spareY + i * 184, w: 420, h: 166, title: LABELS[id].toUpperCase(), sub: "" }; });
+  const n = STUDIOS.length, cols = n <= 2 ? 1 : n <= 6 ? 2 : 3, rows = Math.max(1, Math.ceil(n / cols));
+  STUDIOS.forEach((id, i) => {
+    const c = Math.floor(i / rows), r = i % rows;
+    PANELS[id] = { x: 750 + c * 450, y: 30 + r * 560, w: 420, h: 540, title: LABELS[id].toUpperCase(), sub: "Dev Studio · JEV" };
+  });
+  const W = 720 + Math.max(cols, 1) * 450;
+  const H = Math.max(800, 30 + rows * 560, spareY + SPARE.length * 184);
+  $("stage").setAttribute("viewBox", `0 0 ${W} ${H}`);
+  CLAUDE = { x: (450 + 750) / 2, y: H / 2 };
+}
+const ALL_IDS = () => ["lap", ...STUDIOS, ...SPARE];
+
+function render() {
+  layoutPanels();
+  const links = $("links"), panels = $("panels"), nodes = $("nodes");
+  links.innerHTML = panels.innerHTML = nodes.innerHTML = $("routes").innerHTML = "";
+  pos = { claude: CLAUDE };
+  // panels
+  for (const [id, p] of Object.entries(PANELS)) {
+    const m = id === "lap" ? null : (S.minis[id] || {});
+    const online = id === "lap" ? true : m.online;
+    el("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: 14, fill: css("--panel"),
+                 stroke: online ? css("--panel-edge") : css("--faint"), "stroke-dasharray": online ? "" : "6 6" }, panels);
+    el("text", { x: p.x + 16, y: p.y + 26, class: "panel-title" }, panels, p.title);
+    if (m && m.online) {
+      const busy = (m.agents || []).some(a => a.status === "working" || a.status === "blocked");
+      const btBusy = (m.room || []).some(t => t.status === "running");
+      const label = (busy ? "studio working" : "studio standing by") + (btBusy ? " · local model working" : "");
+      const t = el("text", { x: p.x + 16, y: p.y + 62, class: "panel-sub" }, panels, label);
+      t.style.fill = busy || btBusy ? css("--claude") : css("--dim");
+    }
+    let sub = p.sub;
+    if (m) sub = m.online ? `${p.sub} · ${m.project || ""} · ${m.note || ""}` + (m.app && m.app.length ? ` · ${appName()} on` : "") : (m.note || "offline");
+    el("text", { x: p.x + 16, y: p.y + 44, class: "panel-sub" }, panels, sub);
+    // a machine's own LOCAL WORK line, in its panel (the laptop's comes after its Room, below)
+    // studio: below the worker labels, above the "other agents" line; spare panels are short, so the block sits low
+    if (id !== "lap") localLine(panels, p.x + 16, p.y + p.h - (SPARE.includes(id) ? 52 : 136), m && m.local, p.w);
+  }
+  // laptop: same shell as a Mini (JEV routing band, studio ring around a JEV hub), then the local-model app strip and the Room
+  const L = S.laptop || {}, lp = PANELS.lap;
+  const proj = (L.projects || [])[0], aud = L.auditor || {}, model = L.model || {};
+  const running = proj && proj.tasks.find(t => t.status === "running");
+  const memberName = proj && proj.members[0] || lbl("lap.member", "Member");
+  const lh = hub("lap");
+  pos["lap"] = lh; pos["lap.jev"] = lh;
+  pos["lap.haiku"] = { x: lp.x + 70, y: lp.y + 446 };
+  pos["lap.member"] = { x: lp.x + 210, y: lp.y + 446 };
+  pos["lap.model"] = { x: lp.x + 350, y: lp.y + 446 };
+  const team0 = L.studio || [];
+  drawTeam("lap", team0, lh);
+  jevHub(lh, team0.length, "router");
+  drawBand(lp, L.comms);
+  const team = L.studio || [];
+  el("text", { x: lp.x + 16, y: lp.y + 62, class: "panel-sub" }, panels, team.length ? "DEV STUDIO · this laptop" : "DEV STUDIO · not running")
+    .style.fill = team.some(a => a.status === "working") ? css("--claude") : css("--dim");
+  line(links, pos["lap.member"], pos["lap.model"], css("--local"), .5);
+  if (S.audit) line(links, pos["lap.haiku"], pos["lap.member"], css("--haiku"), .25);
+  node(nodes, pos["lap.member"], 24, running ? css("--claude") : css("--local"), memberName, running ? `step ${running.steps}` : "waiting", !!running);
+  node(nodes, pos["lap.model"], 28, model.up ? (model.busy ? css("--claude") : css("--local")) : css("--alert"),
+       model.name || "model", model.up ? (model.busy ? "thinking" : "ready") : "off", model.busy);
+  const sw = aud.studio_worst;
+  if (!S.audit) {
+    // no audit target configured: no auditor node
+  } else if (sw) {
+    // Worst studio: progressing = green, idle = dim, anything else = alert.
+    const color = sw.status === "progressing" ? css("--haiku") : sw.status === "idle" ? css("--dim") : css("--alert");
+    const tip = (aud.studios || []).map(s => `${s.label || s.id}: ${s.status || "?"} · ${s.summary || ""}`).join("\n");
+    node(nodes, pos["lap.haiku"], 18, color, lbl("lap.haiku", "Auditor"), clip(`${sw.label || sw.id}: ${sw.summary || ""}`, 18), false, null, tip || undefined);
+  } else {
+    node(nodes, pos["lap.haiku"], 18, aud.status === "progressing" ? css("--haiku") : aud.status === "idle" ? css("--dim") : css("--alert"),
+         lbl("lap.haiku", "Auditor"), aud.status || "idle", false);
+  }
+  el("text", { x: lp.x + 16, y: lp.y + 408, class: "panel-sub" }, nodes, `${appName().toUpperCase()} · local models`);
+  let ty = lp.y + 516;
+  if (!proj) {
+    el("text", { x: lp.x + 16, y: ty, class: "panel-sub" }, nodes, "No Room project");
+  } else if (!running) {
+    const failed = proj.tasks.filter(t => t.status === "failed").length;
+    el("text", { x: lp.x + 16, y: ty, class: "panel-sub" }, nodes, `ROOM · ${proj.name} · idle · ${proj.tasks.length} tasks${failed ? ", " + failed + " failed" : ""}`);
+  } else {
+    el("text", { x: lp.x + 16, y: ty, class: "panel-sub" }, nodes, `ROOM · ${proj.name}`);
+    for (const t of proj.tasks.slice(-6)) {
+      ty += 22;
+      el("circle", { cx: lp.x + 22, cy: ty - 4, r: 5, fill: statusColor(t.status) }, nodes);
+      el("text", { x: lp.x + 34, y: ty, class: "task" }, nodes, clip(`${t.title}`, 44));
+      el("text", { x: lp.x + 404, y: ty, class: "task dim", "text-anchor": "end" }, nodes, t.status);
+      if (t.status === "running" && t.step) {
+        ty += 17; el("text", { x: lp.x + 34, y: ty, class: "task dim" }, nodes, clip("↳ " + t.step, 52));
+      }
+    }
+  }
+  if (aud.summary && running) { ty += 26; el("text", { x: lp.x + 16, y: ty, class: "panel-sub" }, nodes, "AUDITOR"); wrap(nodes, aud.summary, lp.x + 16, ty + 16, 66, 1); }
+  localLine(panels, lp.x + 16, ty + 36, L.local, lp.w);
+  // studios
+  for (const mid of [...STUDIOS, ...SPARE]) {
+    const m = S.minis[mid] || {}, h = hub(mid);
+    pos[mid] = h; pos[mid + ".jev"] = h;
+    if (SPARE.includes(mid) && !m.online) continue;
+    drawTeam(mid, m.agents || [], h);
+    if (m.online) {
+      const P = PANELS[mid];
+      jevHub(h, (m.agents || []).length, (m.jev && m.jev.router) || "router");
+      drawBand(P, m.comms);
+      if (m.mem) el("text", { x: P.x + P.w - 16, y: P.y + 26, class: "panel-sub", "text-anchor": "end" }, nodes, `memory free ${m.mem}`);
+      // every other Claude / Codex session on this Mini
+      const others = m.others || [];
+      if (others.length) {
+        const busy = others.filter(o => o.busy);
+        const txt = "other agents: " + others.slice().sort((a, b) => b.busy - a.busy).map(o => `${o.count > 1 ? o.count + "× " : ""}${o.name}${o.where && o.where !== "/" && o.where !== "~" ? " (" + o.where + ")" : ""}${o.busy ? " WORKING" : ""}`).join(" · ");
+        const t = el("text", { x: P.x + P.w - 16, y: P.y + P.h - 56, class: "panel-sub", "text-anchor": "end" }, nodes, clip(txt, 52));
+        t.style.fill = busy.length ? css("--claude") : css("--dim");
+        pos[mid + ".other"] = { x: P.x + P.w - 60, y: P.y + P.h - 62 };
+      }
+      // this machine's local-model app and its Room: one compact row at the bottom
+      const tasks = m.room || [];
+      const live = tasks.find(t => t.status === "running") || tasks[tasks.length - 1];
+      const bp = { x: P.x + 28, y: P.y + P.h - 26 };
+      pos[mid + ".bt"] = bp;
+      if (tasks.length) {
+        node(nodes, bp, 11, live.status === "running" ? css("--claude") : statusColor(live.status), "", "", live.status === "running", null, null, "none");
+        const what = live.status === "running" ? `step ${live.steps}` : live.status;
+        el("text", { x: P.x + 48, y: P.y + P.h - 22, class: "task" }, nodes, clip(`${appName()} · ${live.member} · ${what} · ${live.title}${live.step ? " · " + live.step : ""}`, 50));
+      }
+    }
+  }
+  // Claude and its lines to every machine
+  for (const t of ALL_IDS()) {
+    const on = t === "lap" || (S.minis[t] || {}).online;
+    const m = S.minis[t] || {};
+    const working = t === "lap" ? ((S.laptop.projects || []).some(p => p.tasks.some(x => x.status === "running")))
+                                : ((m.room || []).some(x => x.status === "running") || (m.agents || []).some(a => a.status === "working"));
+    line(links, CLAUDE, pos[t], css("--claude"), working ? .9 : on ? .25 : .1, on ? (working ? "" : "3 6") : "4 8");
+  }
+  drawRoutes();
+  el("circle", { cx: CLAUDE.x, cy: CLAUDE.y, r: 80, fill: "url(#claudeGlow)", class: "breathe" }, nodes);
+  drawBuilders();
+  const recent = S.claude && S.claude.at && (Date.now() / 1000 - S.claude.at) < 600;
+  node(nodes, CLAUDE, 36, css("--claude"), "CLAUDE", "Opus · driver", recent, 13);
+  if (S.claude && S.claude.last) wrap(nodes, S.claude.last, CLAUDE.x - 130, CLAUDE.y + 84, 36, 3, "middle");
+}
+
+// The last route in each studio stays drawn: sender -> JEV -> receiver, until a newer one replaces it.
+function ago(t) {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  return s < 90 ? Math.round(s) + "s" : s < 5400 ? Math.round(s / 60) + "m" : s < 129600 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d";
+}
+function drawRoutes() {
+  const g = $("routes");
+  for (const mid of ["lap", ...STUDIOS]) {
+    const comms = mid === "lap" ? (S.laptop || {}).comms : (S.minis[mid] || {}).comms;
+    const c = (comms || []).slice(-1)[0];
+    const agents = (mid === "lap" ? (S.laptop || {}).studio : (S.minis[mid] || {}).agents) || [];
+    const jev = pos[mid + ".jev"];
+    if (!c || !jev) continue;
+    const at = r => { const a = agents.find(a => a.name === r || (a.name || "").endsWith("-" + r)); return a && pos[`${mid}.${a.name}`]; };
+    const dropped = c.to === "dropped" || c.decision === "drop";
+    const from = at(c.from);
+    const seg = (a, b, dim) => a && b && el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: css("--route"),
+      "stroke-opacity": dim ? .45 : .95, "stroke-width": dim ? 1.5 : 3, "stroke-dasharray": dim ? "5 5" : "" }, g);
+    seg(from, jev, dropped);
+    if (dropped) continue;
+    for (const r of c.to.split(", ")) {
+      const to = at(r);
+      if (!to) continue;
+      seg(jev, to, false);
+      el("circle", { cx: to.x, cy: to.y, r: 21, fill: "none", stroke: css("--route"), "stroke-width": 2.5, "stroke-opacity": .95 }, g);
+      if (c.t) {
+        const mx = (jev.x + to.x) / 2, my = (jev.y + to.y) / 2;
+        const tall = Math.abs(to.y - jev.y) > Math.abs(to.x - jev.x);   // beside a vertical line, above a flat one (clear of the JEV label)
+        el("text", { x: tall ? mx - 6 : mx, y: tall ? my + 4 : my - 4, class: "panel-sub", "text-anchor": tall ? "end" : "middle" }, g, ago(c.t)).style.fill = css("--route");
+      }
+    }
+  }
+}
+
+// Temporary build work (agents Claude delegated) shown inside the machine it runs on, marked temp.
+function drawBuilders() {
+  const all = (S && S.builders) || [];
+  for (const mid of ["lap", ...STUDIOS]) {
+    const p = PANELS[mid];
+    const mine = all.filter(b => b.machine === mid);
+    if (!mine.length) continue;
+    const y = p.y + 140;
+    el("text", { x: p.x + 16, y, class: "panel-sub" }, nodes, "⚙ TEMPORARY BUILD").style.fill = css("--claude");
+    mine.forEach((b, i) => {
+      const yy = y + 16 + i * 15;
+      const running = b.status === "running";
+      el("circle", { cx: p.x + 22, cy: yy - 4, r: 5, fill: running ? css("--claude") : b.status === "fail" ? css("--alert") : css("--done") }, nodes);
+      const t = el("text", { x: p.x + 34, y: yy, class: "task" }, nodes, clip((running ? "" : (b.status === "fail" ? "✗ " : "✓ ")) + b.task, 26));
+      if (!running) t.classList.add("dim");
+      pos["builder." + b.id] = { x: p.x + 22, y: yy - 4 };
+    });
+  }
+}
+function line(g, a, b, color, op, dash) {
+  if (!a || !b) return;
+  el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, "stroke-opacity": op, "stroke-width": 1.5, "stroke-dasharray": dash || "" }, g);
+}
+function node(g, p, r, color, label, sub, spinning, size, tip, place) {
+  const ring = el("circle", { cx: p.x, cy: p.y, r: r, fill: css("--bg"), stroke: color, "stroke-width": 2.5 }, g);
+  if (tip) el("title", {}, ring, tip);
+  el("circle", { cx: p.x, cy: p.y, r: r * .45, fill: color, "fill-opacity": .85 }, g);
+  if (spinning) {
+    const arc = el("circle", { cx: p.x, cy: p.y, r: r + 6, fill: "none", stroke: color, "stroke-width": 2,
+                               "stroke-dasharray": `${r} ${r * 3}`, "stroke-linecap": "round" }, g);
+    el("animateTransform", { attributeName: "transform", type: "rotate", from: `0 ${p.x} ${p.y}`, to: `360 ${p.x} ${p.y}`, dur: "1.6s", repeatCount: "indefinite" }, arc);
+  }
+  if (place === "none") return;
+  const up = place === "above";
+  const t = el("text", { x: p.x, y: up ? p.y - r - 27 : p.y + r + 15, class: "node-label" }, g, label);
+  if (size) t.setAttribute("font-size", size);
+  el("text", { x: p.x, y: up ? p.y - r - 12 : p.y + r + 28, class: "node-sub" }, g, sub || "");
+}
+function wrap(g, text, x, y, width, lines, anchor) {
+  const words = text.split(/\s+/); let lineText = "", n = 0;
+  const at = anchor === "middle" ? { x: x + 130, "text-anchor": "middle" } : { x };
+  for (const w of words) {
+    if ((lineText + " " + w).trim().length > width) {
+      el("text", { ...at, y: y + n * 15, class: "task dim" }, g, lineText.trim()); n++; lineText = w;
+      if (n >= lines) return;
+    } else lineText += " " + w;
+  }
+  if (n < lines) el("text", { ...at, y: y + n * 15, class: "task dim" }, g, lineText.trim());
+}
+
+// --- where an event starts and ends ---
+function resolve(id) {
+  if (pos[id]) return pos[id];
+  const mid = id.split(".")[0];
+  const name = id.slice(mid.length + 1);
+  const hit = Object.keys(pos).find(k => k.startsWith(mid + ".") && name && (k.endsWith(name) || k.endsWith("-" + name.replace(/^studio-/, ""))));
+  return hit ? pos[hit] : (pos[mid] || CLAUDE);
+}
+
+// --- particles ---
+const flights = [];
+function fly(ev) {
+  const color = css(KIND[ev.kind] || "--dim");
+  const a = resolve(ev.from), b = resolve(ev.to);
+  if (ev.from === ev.to || (a.x === b.x && a.y === b.y)) { ring(a, color); return; }
+  const pts = [a];
+  if (ev.via) pts.push(resolve(ev.via));
+  pts.push(b);
+  const dot = el("circle", { r: 6, fill: color }, $("fx"));
+  const glow = el("circle", { r: 14, fill: color, "fill-opacity": .35, filter: "url(#blur)" }, $("fx"));
+  flights.push({ pts, dot, glow, color, start: performance.now(), per: 1100 });
+}
+function ring(p, color) {
+  const r = el("circle", { cx: p.x, cy: p.y, r: 20, fill: "none", stroke: color, "stroke-width": 3 }, $("fx"));
+  flights.push({ ring: r, start: performance.now(), per: 900 });
+}
+function tick(now) {
+  for (let i = flights.length - 1; i >= 0; i--) {
+    const f = flights[i], t = (now - f.start) / f.per;
+    if (f.ring) {
+      if (t >= 1) { f.ring.remove(); flights.splice(i, 1); continue; }
+      f.ring.setAttribute("r", 20 + t * 40); f.ring.setAttribute("stroke-opacity", 1 - t); continue;
+    }
+    const segs = f.pts.length - 1;
+    if (t >= segs) { f.dot.remove(); f.glow.remove(); ring(f.pts[segs], f.color); flights.splice(i, 1); continue; }
+    const s = Math.floor(t), u = t - s, e = u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+    const A = f.pts[s], B = f.pts[s + 1];
+    const x = A.x + (B.x - A.x) * e, y = A.y + (B.y - A.y) * e;
+    for (const c of [f.dot, f.glow]) { c.setAttribute("cx", x); c.setAttribute("cy", y); }
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// --- feed ---
+function names() { return Object.assign({ claude: "Claude", lap: LABELS.lap || "Hub" }, (S && S.labels) || {}); }
+function nice(id) {
+  const NAMES = names();
+  if (NAMES[id]) return NAMES[id];
+  const [mid, ...rest] = id.split(".");
+  const name = NAMES[mid] || LABELS[mid] || mid;
+  return `${name} ${rest.join(".") === "bt" ? appName() : rest.join(".").replace(/^studio-/, "")}`.trim();
+}
+function feed(ev, quiet) {
+  const li = document.createElement("li");
+  li.className = ev.kind || "info";
+  li.style.borderLeftColor = css(KIND[ev.kind] || "--dim");
+  const time = new Date(ev.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const path = ev.from === ev.to ? nice(ev.from) : `${nice(ev.from)} → ${ev.via ? nice(ev.via) + " → " : ""}${nice(ev.to)}`;
+  li.innerHTML = `<div class="meta"></div><div class="txt"></div>`;
+  li.querySelector(".meta").textContent = ev.kind === "step" ? time : `${time} · ${path}`;
+  li.querySelector(".txt").textContent = ev.text;
+  if (quiet) li.style.animation = "none";
+  const list = $("feed");
+  list.prepend(li);
+  while (list.children.length > 120) list.lastChild.remove();
+}
+
+// LOCAL WORK in a machine's panel: queued and held jobs, the running job, the blocked reason (alert colour),
+// done today. At 11px a character takes about 8.5 units, so the block is split into rows (16 apart) that each fit
+// the panel; the blocked reason is cut to the panel's width. Up to four rows: from y to y + 48.
+function localLine(parent, x, y, local, width) {
+  if (!local) return;
+  const maxChars = Math.floor((width - 32) / 8.5);
+  const run = local.running_id ? "running " + clip(local.running_id, 24) : "nothing running";
+  const rows = [[`LOCAL WORK · ${local.queued} queued · ${local.held || 0} held`, css("--dim")], [run, css("--dim")]];
+  if (local.blocked) rows.push([`blocked: ${clip(local.blocked, maxChars - 9)}`, css("--alert")]);
+  rows.push([`done today ${local.done_today} (${local.done_today_chars} chars)`, css("--dim")]);
+  rows.forEach(([text, fill], i) => { el("text", { x, y: y + i * 16, class: "panel-sub" }, parent, text).style.fill = fill; });
+}
+
+// LOCAL summary for the page header, one line: totals over all machines, then today's total.
+// The per-machine detail stays in the panels; the line is cut with an ellipsis if it runs long.
+function localWorkLine(S) {
+  let running = 0, held = 0;
+  for (const id of ["lap", ...STUDIOS]) {
+    const l = id === "lap" ? (S.laptop || {}).local : ((S.minis || {})[id] || {}).local;
+    if (!l) continue;
+    running += l.running || 0;
+    held += l.held || 0;
+  }
+  const t = S.local_today || {};
+  const share = t.pct == null ? "" : ` · output share ~${t.pct}% (est.)`;
+  return clip(`LOCAL · ${held} held · ${running} running · today ${t.jobs || 0} jobs, ${t.chars || 0} chars${share}`, 96);
+}
+
+// --- live connection ---
+function connect() {
+  const es = new EventSource("/stream");
+  es.onopen = () => { $("conn").classList.add("on"); $("connText").textContent = "live"; };
+  es.onerror = () => { $("conn").classList.remove("on"); $("connText").textContent = "reconnecting"; };
+  es.addEventListener("state", e => { S = JSON.parse(e.data);
+    // Claude updated the page: load the new version.
+    if (window.PAGE && S.page && S.page !== window.PAGE) { location.reload(); return; }
+    window.PAGE = window.PAGE || S.page;
+    render();
+    $("claudeLast").textContent = S.claude && S.claude.last ? "Claude: " + clip(S.claude.last, 90) : "";
+    $("localWork").textContent = localWorkLine(S); });
+  es.addEventListener("history", e => { $("feed").innerHTML = ""; JSON.parse(e.data).forEach(ev => feed(ev, true)); });
+  es.addEventListener("event", e => { const ev = JSON.parse(e.data); feed(ev); if (S) fly(ev); });
+}
+connect();
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# Words that must never appear in anything you publish. One per line, case-insensitive; # starts a comment.
+# Copy this file to .privacy-words (it is gitignored and never leaves your machine) and replace the values below
+# with your own: your user name, your machines' host names, tailnet addresses, private project names.
+# The values here are fake.
+alice-laptop
+bob
+100.100.9.9

@@ -1,0 +1,8 @@
+{
+  "_comment": "CI config for test/shot.sh: the laptop only, no SSH routes, no studios.",
+  "herdr_session": "ci-session",
+  "viewer_port": 8799,
+  "machines": [
+    {"id": "lap", "label": "Laptop", "role": "hub", "ssh": [], "project": "~/Projects/re-studio"}
+  ]
+}

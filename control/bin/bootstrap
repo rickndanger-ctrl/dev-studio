@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Bootstrap re-studio on this machine: check the tools, run install.sh, then print the next steps.
+#
+#   bin/bootstrap              check tools and install (install.sh does the work)
+#   bin/bootstrap --dry-run    the same checks, but install.sh changes nothing
+#   bin/bootstrap --enable     also enable and start the viewer and auditor services
+#
+# Required: python3. Warned about: herdr, ssh. Optional (screenshots): chromium and node 22+.
+# Flags go to install.sh unchanged. Safe to run again. Bash 3.2 compatible (macOS).
+set -eu
+
+# Resolve symlinks by hand (macOS readlink has no -f): this file may be linked into ~/.local/bin.
+src="$0"
+while [ -L "$src" ]; do
+  d="$(cd "$(dirname "$src")" && pwd -P)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$d/$src" ;; esac
+done
+REPO="$(cd "$(dirname "$src")/.." && pwd -P)"
+
+DRY=0
+ENABLE=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY=1 ;;
+    --enable)  ENABLE=1 ;;
+    -h|--help) sed -n '2,8p' "$src"; exit 0 ;;
+    *) echo "bootstrap: unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+say()  { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+say "bootstrap: re-studio from $REPO"
+say ""
+say "tools"
+
+# Required ------------------------------------------------------------------
+if have python3; then
+  say "  ok       python3 $(python3 -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || echo '?')"
+else
+  die "python3 is required: install Python 3, then run this again"
+fi
+
+# Warned about, not fatal -------------------------------------------------------
+if have herdr; then say "  ok       herdr"; else warn "herdr not found: dispatch and the studio sessions need it"; fi
+if have ssh; then say "  ok       ssh"; else warn "ssh not found: Mini routes will not work"; fi
+
+# Optional: screenshots need chromium and node 22+ (test/shot.mjs uses node's built-in WebSocket).
+chrome=""
+for c in chromium chromium-browser google-chrome; do
+  if [ -z "$chrome" ] && have "$c"; then chrome="$c"; fi
+done
+node_major=""
+if have node; then
+  node_major="$(node -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>/dev/null || true)"
+fi
+case "$node_major" in
+  ''|*[!0-9]*) node_ok=0 ;;
+  *) if [ "$node_major" -ge 22 ]; then node_ok=1; else node_ok=0; fi ;;
+esac
+if [ -n "$chrome" ] && [ "$node_ok" -eq 1 ]; then
+  say "  ok       screenshots: $chrome, node $node_major"
+else
+  say "  skip     screenshots (optional): need chromium and node 22+ (found: ${chrome:-no chromium}, node ${node_major:-none})"
+fi
+
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) warn "~/.local/bin is not on PATH: add it so the re-studio commands run from anywhere" ;;
+esac
+
+# Install (install.sh is idempotent; the flags pass straight through) -----------
+say ""
+if [ "$DRY" -eq 1 ]; then say "install (dry run, nothing will change)"; else say "install"; fi
+if ! "$REPO/install.sh" "$@"; then
+  die "install.sh failed: see the messages above"
+fi
+
+# Next steps (always last) ----------------------------------------------------------
+say ""
+if [ "$DRY" -eq 1 ]; then say "Dry run: nothing was changed. Run without --dry-run to install."; say ""; fi
+say "Next:"
+say "  1. Edit your machines: ${RE_STUDIO_CONFIG:-$HOME/.config/re-studio/machines.json}"
+if [ "$ENABLE" -eq 1 ]; then
+  say "  2. The services are enabled. Check them with: systemctl --user status studio-viewer re-audit"
+else
+  say "  2. Start the services (safe to repeat): cd $REPO && ./install.sh --enable"
+  say "     or: systemctl --user enable --now studio-viewer re-audit"
+fi
+say "  3. Open the viewer: bin/viewer   (or just: viewer, once ~/.local/bin is on PATH)"

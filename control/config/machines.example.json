@@ -1,0 +1,42 @@
+{
+  "_comment": "Copy to ~/.config/re-studio/machines.json and edit. See README.md, 'Config reference'.",
+  "herdr_session": "dev-studio",
+  "viewer_port": 8765,
+  "model_health_port": 18081,
+  "machines": [
+    {
+      "id": "lap",
+      "label": "Laptop",
+      "role": "hub",
+      "ssh": [],
+      "project": "~/Projects/re-studio"
+    },
+    {
+      "id": "m1",
+      "label": "Mini 1",
+      "role": "studio",
+      "ssh": ["mini1.local"],
+      "local_model": {"kind": "cli", "path": "~/Fake Tools/runner", "args": ["-p"]},
+      "project": "~/DevStudio",
+      "architect": "studio-architect"
+    },
+    {
+      "id": "m2",
+      "label": "Mini 2",
+      "role": "studio",
+      "ssh": ["mini2.local"],
+      "ssh_alt": [["mini1.local", "mini2.local"]],
+      "project": "~/DevStudio",
+      "architect": "studio-architect"
+    },
+    {
+      "id": "m3",
+      "label": "Mini 3",
+      "role": "studio",
+      "enabled": false,
+      "ssh": [],
+      "project": "~/DevStudio",
+      "architect": "studio-architect"
+    }
+  ]
+}

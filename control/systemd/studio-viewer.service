@@ -1,0 +1,13 @@
+[Unit]
+Description=Studio Routing viewer (live view of Claude, the local models, and the studios on each machine)
+After=network.target
+
+[Service]
+ExecStart=@PYTHON3@ @REPO@/viewer/server.py
+WorkingDirectory=@REPO@/viewer
+Restart=always
+RestartSec=3
+Environment=PATH=@PATH@
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Watch every enabled studio and print one line when a studio goes from working to idle (its whole team
+finished), so the orchestrator can hand it the next job. Prints nothing while studios are busy.
+
+  studio-watch [seconds]     check every N seconds (default 60)
+
+Machines come from the machine config (the hub is checked locally, the others over SSH), the herdr session
+from herdr_session, and the PATH prefix from remote_path. Standard library only.
+"""
+import json, os, shlex, subprocess, sys, time
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import re_studio_config as cfg
+
+# ssh's own exit status when it could not connect: the only failure where nothing ran on the host.
+SSH_CONNECT_FAILED = 255
+
+
+def probe_script():
+    """The agent list on one machine. The PATH prefix comes from the config; $HOME expands on the machine itself."""
+    session = cfg.get("herdr_session")
+    if not session:
+        raise SystemExit("herdr_session is not set in the machine config")
+    return f"export PATH={cfg.remote_path()}:$PATH; herdr --session {shlex.quote(session)} agent list 2>/dev/null"
+
+
+def watch_targets():
+    """Enabled machines in config order, as (id, label, is_hub)."""
+    return [(m["id"], m.get("label", m["id"]), m.get("role") == "hub")
+            for m in cfg.machines() if m.get("enabled") is not False]
+
+
+def remote_output(mid, script):
+    """stdout from the first SSH route that connects. Routes are tried only on ssh's own connect failure."""
+    routes = cfg.routes(mid, script, timeout=8)
+    for i, (cmd, _) in enumerate(routes):
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
+        if r.returncode != SSH_CONNECT_FAILED or i == len(routes) - 1:
+            return r.stdout
+    return ""
+
+
+def busy(mid, is_hub):
+    """True while an agent on the machine is working, False when all are idle, None when it cannot be read."""
+    script = probe_script()
+    try:
+        if is_hub:
+            out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20).stdout
+        else:
+            out = remote_output(mid, script)
+        agents = [a for a in json.loads(out)["result"]["agents"] if a.get("name")]
+        return any(a.get("agent_status") == "working" for a in agents)
+    except Exception:
+        return None
+
+
+def main(argv):
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__.strip())
+        return 0
+    interval = int(argv[0]) if argv else 60
+    prev = {}
+    while True:
+        for mid, label, is_hub in watch_targets():
+            now = busy(mid, is_hub)
+            if now is None:
+                continue
+            if prev.get(mid) is True and now is False:
+                print(f"IDLE {label} — whole studio finished at {time.strftime('%H:%M:%S')}", flush=True)
+            prev[mid] = now
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

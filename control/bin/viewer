@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  printf '%s\n' 'Ensure the Studio Routing app server is running and open its window'
+  exit 0
+fi
+# Open the Studio Routing app. The server runs as the studio-viewer user service (always on); this makes
+# sure it is up, falls back to a plain process if the service is not installed, then opens the app window.
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+REPO="$(dirname "$HERE")"
+PORT="$(PYTHONPATH="$REPO/lib" python3 -c 'import re_studio_config as c; print(c.get("viewer_port", 8765))')"
+STATE="$(PYTHONPATH="$REPO/lib" python3 -c 'import re_studio_config as c; print(c.state_dir())')"
+if systemctl --user list-unit-files studio-viewer.service >/dev/null 2>&1; then
+  systemctl --user start studio-viewer.service 2>/dev/null
+fi
+if ! ss -ltn | grep -q "127.0.0.1:$PORT "; then
+  cd "$REPO/viewer"
+  setsid nohup python3 server.py "$PORT" > "$STATE/viewer.log" 2>&1 < /dev/null &
+  sleep 2
+fi
+[ "${1:-}" = "--no-open" ] || setsid nohup omarchy-launch-webapp "http://127.0.0.1:$PORT" >/dev/null 2>&1 < /dev/null &

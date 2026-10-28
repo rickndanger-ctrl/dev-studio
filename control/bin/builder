@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Record a Sonnet build agent for the Studio Routing viewer so live building shows on the page.
+  builder start <id> "<task>" [where]   builder done <id> [ok|fail]   builder clear
+"""
+import json, os, sys, time
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+    print("Record a build agent's progress for the Studio Routing viewer.")
+    sys.exit(0)
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import re_studio_config as cfg
+
+F = os.path.join(cfg.state_dir(), "builders.json")
+
+def load():
+    try:
+        return json.load(open(F))
+    except Exception:
+        return {}
+
+d = load()
+cmd = sys.argv[1] if len(sys.argv) > 1 else "clear"
+if cmd == "start":
+    d[sys.argv[2]] = {"task": sys.argv[3] if len(sys.argv) > 3 else sys.argv[2],
+                      "where": sys.argv[4] if len(sys.argv) > 4 else "", "status": "running", "at": time.time()}
+elif cmd == "done" and sys.argv[2] in d:
+    d[sys.argv[2]]["status"] = sys.argv[3] if len(sys.argv) > 3 else "done"
+    d[sys.argv[2]]["at"] = time.time()
+elif cmd == "clear":
+    d = {}
+tmp = F + ".tmp"
+json.dump(d, open(tmp, "w"))
+os.replace(tmp, F)

@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Studio auditor: watches the local models' Room tasks in the audited app and reports to Claude.
+
+The target comes from the `audit` block of the machine config: {app, data_dir, mac_data_dir, project}.
+Without that block it prints "no audit target configured" and exits 0.
+
+Reads the app's files only. It never runs the app's own command, because a second copy of the app
+can stop a live run.
+
+Each pass:
+  1. cheap checks in code: is the run moving, looping, stalled, finished; do the findings' file:line
+     references exist;
+  2. Haiku is asked only when something changed and enough time has passed, or a check tripped;
+  3. writes state/latest.json and state/audit.log; anything Claude must act on is appended to
+     state/alerts.log (Claude watches that file).
+
+  re-audit            one pass
+  re-audit --loop N   a pass every N seconds (default 120)
+"""
+import glob, hashlib, json, os, re, shlex, subprocess, sys, time
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+    print('audit Room tasks in the configured app and report progress, stalls, or loops to Claude')
+    sys.exit(0)
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+import re_studio_config as cfg
+
+AUDIT = cfg.audit()
+DATA = os.path.expanduser(AUDIT["data_dir"]) if AUDIT else ""
+APP = (AUDIT or {}).get("app") or "the audited app"
+PROJECT = (AUDIT or {}).get("project", "")
+STATE = cfg.state_dir()
+HAIKU = "claude-haiku-5-5"
+HAIKU_EVERY = 600      # seconds between routine Haiku reviews while a task runs
+STALL_AFTER = 900      # seconds with no new step before a run counts as stalled
+OLD_AFTER = 7200       # a Room task idle this long is old news and must not drive the verdict
+STUDIO_STATUS = ("progressing", "idle", "stalled", "looping", "off-scope", "unreachable")
+SEVERITY = {"off-scope": 4, "looping": 3, "stalled": 2, "progressing": 1, "idle": 0}   # unreachable only if all are
+
+os.makedirs(STATE, exist_ok=True)
+
+
+def now():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def load(path, default=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save(path, value):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(value, f, indent=2)
+    os.replace(tmp, path)
+
+
+def append(name, line):
+    with open(os.path.join(STATE, name), "a") as f:
+        f.write(line.rstrip("\n") + "\n")
+
+
+def project():
+    for p in load(os.path.join(DATA, "projects.json"), []) or []:
+        if p.get("name") == PROJECT:
+            return p
+    return None
+
+
+def room(project_id):
+    return load(os.path.join(DATA, "rooms", project_id + ".json"), {}) or {}
+
+
+def thread(thread_id):
+    return load(os.path.join(DATA, "conversations", thread_id + ".json"))
+
+
+def own_pids():
+    """This process and its ancestors. Their command lines can carry the patterns (a remote shell wrapping mini-room):
+    they must never count as the app."""
+    pids, pid = {os.getpid()}, os.getpid()
+    for _ in range(8):
+        try:
+            pid = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout)
+        except ValueError:
+            break
+        if pid <= 1:
+            break
+        pids.add(pid)
+    return pids
+
+
+def app_running(patterns):
+    """Whether the audited app runs: any entry of the audit block's `process` list matches (pgrep -x by name, else
+    pgrep -f by pattern). None when the list is empty or pgrep is missing: the answer is unknown, not no."""
+    if not patterns:
+        return None
+    try:
+        skip = own_pids()
+        for p in patterns:
+            for flag in ("-x", "-f"):
+                found = subprocess.run(["pgrep", flag, p], capture_output=True, text=True).stdout.split()
+                if {int(x) for x in found} - skip:
+                    return True
+        return False
+    except OSError:
+        return None
+
+
+def short(value, n=160):
+    text = value if isinstance(value, str) else json.dumps(value)
+    return " ".join(text.split())[:n]
+
+
+_INDEX = {}
+
+
+def source_index(workspace):
+    """File names (basename -> line counts) and every identifier in the project's source, built once."""
+    if workspace in _INDEX:
+        return _INDEX[workspace]
+    files, words = {}, set()
+    for root, _, names in os.walk(workspace):
+        if "node_modules" in root or "/.git" in root:
+            continue
+        for n in names:
+            if n.endswith((".go", ".ts", ".tsx", ".js", ".mjs", ".py", ".md", ".mdx", ".json", ".sh")):
+                full = os.path.join(root, n)
+                try:
+                    text = open(full, errors="replace").read()
+                except Exception:
+                    continue
+                files.setdefault(n, []).append(text.count("\n") + 1)
+                words.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text))
+    _INDEX[workspace] = (files, words)
+    return files, words
+
+
+def check_refs(workspace, text):
+    """References and code names in a findings file that do not exist in the project's source."""
+    files, words = source_index(workspace)
+    bad, seen = [], 0
+    for path, line in re.findall(r"([\w./\-]+\.(?:go|ts|tsx|js|mjs|py|md|mdx|json|sh)):(\d+)", text):
+        seen += 1
+        full = os.path.join(workspace, path)
+        if os.path.isfile(full):
+            with open(full, errors="replace") as f:
+                counts = [sum(1 for _ in f)]
+        else:
+            counts = files.get(os.path.basename(path))
+        if not counts:
+            bad.append(f"{path}:{line} (no such file)")
+        elif int(line) > max(counts):
+            bad.append(f"{path}:{line} (file has {max(counts)} lines)")
+    for name in sorted(set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?:\(\))?`", text))):
+        last = name.split(".")[-1]
+        if len(last) < 6 or last in files or last.lower() in ("unknown", "done"):
+            continue
+        seen += 1
+        if last not in words:
+            bad.append(f"`{name}` (name not found anywhere in the project's source)")
+    return seen, bad
+
+
+def snapshot():
+    proj = project()
+    if not proj:
+        return {"error": f"No {APP} project named {PROJECT}."}
+    ws = proj["workspace"]
+    r = room(proj["id"])
+    tasks = r.get("tasks", [])
+    members = {m.get("id"): m.get("name") for m in r.get("members", [])}
+    active = None
+    for t in tasks:
+        th = thread(t["threadId"]) if t.get("threadId") else None
+        last = (th or {}).get("messages", [{}])[-1] if th else {}
+        if last.get("state") == "writing" and time.time() - os.path.getmtime(
+                os.path.join(DATA, "conversations", t["threadId"] + ".json")) < OLD_AFTER:
+            active = (t, th, last)
+    findings = {}
+    for f in sorted(glob.glob(os.path.join(ws, "findings", "*"))):
+        findings[os.path.basename(f)] = os.path.getsize(f)
+    live = active[0].get("id") if active else None
+    snap = {
+        "at": now(),
+        # A task being worked on right now still carries the result of its previous attempt in the Room; show it as running.
+        "tasks": [{"title": t.get("title"), "status": "running" if t.get("id") == live else t.get("status"),
+                   "failed": False if t.get("id") == live else t.get("failed", False),
+                   "note": "" if t.get("id") == live else t.get("note", ""), "member": members.get(t.get("assignee"))} for t in tasks],
+        "findings": findings,
+    }
+    snap["app_running"] = app_running(AUDIT.get("process"))
+    if active:
+        t, th, last = active
+        events = last.get("events", [])
+        calls = [e for e in events if e.get("type") == "tool_use"]
+        snap["active"] = {
+            "title": t.get("title"),
+            "thread": t.get("threadId"),
+            "steps": len(calls),
+            "conversation_mtime": os.path.getmtime(os.path.join(DATA, "conversations", t["threadId"] + ".json")),
+            "recent": [f'{e.get("name")} {short(e.get("input") or e.get("output", ""), 120)}' for e in calls[-8:]],
+            "last_output": short(next((e.get("output", "") for e in reversed(events) if e.get("type") == "tool_result"), ""), 400),
+            "content_tail": short(last.get("content", "")[-600:], 600),
+        }
+    # Evidence check on every findings file.
+    refs = {}
+    for name in findings:
+        with open(os.path.join(ws, "findings", name), errors="replace") as f:
+            seen, bad = check_refs(ws, f.read())
+        refs[name] = {"references": seen, "broken": bad[:10]}
+    snap["evidence"] = refs
+    for which in mini_ids():
+        snap[which] = mini_room(which)
+        for name, text in ((snap[which] or {}).get("findings") or {}).items():
+            seen, bad = check_refs(ws, text)
+            refs[which + "/" + name] = {"references": seen, "broken": bad[:10]}
+        if snap[which]:
+            snap[which].pop("findings", None)
+            # A task's note is Claude's own send-back instruction, not the model's work; Haiku misreads old notes
+            # (e.g. names it told the model to stop citing) as the current finding. Keep it only on a failed task,
+            # where the note is the failure reason.
+            for t in snap[which].get("tasks", []):
+                if t.get("status") != "failed" or t.get("state") == "writing":
+                    t.pop("note", None)
+                if t.get("state") == "writing" and t.get("idle", 0) > OLD_AFTER:
+                    t["state"] = "stale"   # abandoned long ago: not a live run
+    return snap
+
+
+MINI_ROOM = os.path.join(os.path.dirname(os.path.realpath(__file__)), "mini-room.py")
+
+
+def mini_ids():
+    """Studio machines in config order that have an SSH route. Their ids key the snapshot and the alerts."""
+    return [m["id"] for m in cfg.machines("studio") if cfg.hop_lists(m["id"])]
+
+
+def mini_label(mid):
+    return cfg.machine(mid).get("label", mid)
+
+
+def mini_room(mid):
+    """A Mini's Room, read from its files over SSH by bin/mini-room.py. The audit target travels as its argument,
+    because the Mini cannot read this laptop's config. Routes come from the machine config."""
+    target = json.dumps({k: AUDIT.get(k) for k in ("app", "mac_data_dir", "project", "process")})
+    cmd_remote = "python3 - " + shlex.quote(target)
+    for cmd, _ in cfg.routes(mid, cmd_remote):
+        try:
+            r = subprocess.run(cmd, stdin=open(MINI_ROOM), capture_output=True, text=True, timeout=30)
+            return json.loads(r.stdout)
+        except Exception:
+            continue
+    return None
+
+
+def flags(snap, prev):
+    out = []
+    a = snap.get("active")
+    if a:
+        if snap.get("app_running") is False:
+            out.append("app not running while a task is writing")
+        idle = time.time() - a["conversation_mtime"]
+        if idle > STALL_AFTER:
+            out.append(f"stalled: no new step for {int(idle // 60)} min")
+        rec = a["recent"]
+        if len(rec) >= 6 and len(set(rec[-6:])) <= 2:
+            out.append("looping: the last 6 steps repeat the same 1-2 calls")
+    before = {t["title"]: t for t in (prev or {}).get("tasks", [])}
+    for t in snap.get("tasks", []):
+        b = before.get(t["title"])
+        if b and (b["status"], b["failed"]) != (t["status"], t["failed"]):
+            state = "FAILED: " + t.get("note", "") if t["failed"] else t["status"]
+            out.append(f'task "{t["title"]}" is now {state}')
+    for which in mini_ids():
+        label = mini_label(which)
+        before2 = {t["title"]: t for t in ((prev or {}).get(which) or {}).get("tasks", [])}
+        for t in (snap.get(which) or {}).get("tasks", []):
+            b = before2.get(t["title"])
+            if b and (b["status"], b["failed"]) != (t["status"], t["failed"]):
+                out.append(f'{label} task "{t["title"]}" is now {"FAILED: " + t.get("note", "") if t["failed"] else t["status"]}')
+            if t.get("state") == "writing" and t.get("idle", 0) > STALL_AFTER:
+                out.append(f'{label} stalled: "{t["title"]}" no new step for {t["idle"] // 60} min')
+    for name, r in snap.get("evidence", {}).items():
+        if r["broken"]:
+            out.append(f"{name}: {len(r['broken'])} evidence references do not exist, e.g. {r['broken'][0]}")
+    return out
+
+
+def ask_haiku(snap, raised):
+    prompt = (
+        f"You audit a local AI model doing a task in {APP}. Judge from this snapshot only.\n"
+        "Reply with JSON only: {\"status\": \"progressing|slow|stuck|looping|done|failed\", "
+        "\"summary\": \"one sentence for Claude\", \"concern\": \"empty or one sentence\", "
+        "\"needs_claude\": true|false, \"next_check_minutes\": 2-60}.\n"
+        "needs_claude is true when a task finished or failed, the model is stuck or looping, its evidence is broken, "
+        "or it is drifting away from the task. Local models often say 'done' or 'verified' without checking: do not trust that.\n"
+        "These models run on a CPU or a small Mac: a few minutes between steps is normal. Call a run stuck only when the code flags say stalled or looping.\n"
+        f"Flags raised by code: {json.dumps(raised)}\n\nSnapshot:\n{json.dumps(snap, indent=1)[:12000]}"
+    )
+    try:
+        out = subprocess.run(
+            ["claude", "-p", "--model", HAIKU, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+             "--no-session-persistence", "--output-format", "json", prompt],
+            capture_output=True, text=True, timeout=180, cwd=STATE)
+        result = json.loads(out.stdout)
+        text = result.get("result", "")
+        verdict = json.loads(text[text.find("{"): text.rfind("}") + 1])
+        verdict["cost_usd"] = result.get("total_cost_usd")
+        return verdict
+    except Exception as e:
+        return {"status": "unknown", "summary": f"Haiku review failed: {e}", "concern": "", "needs_claude": bool(raised),
+                "next_check_minutes": 10}
+
+
+def _load_snap():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("studio_snap", os.path.join(os.path.dirname(os.path.realpath(__file__)), "studio-snap.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def haiku_json(prompt):
+    out = subprocess.run(
+        ["claude", "-p", "--model", HAIKU, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+         "--no-session-persistence", "--output-format", "json", prompt],
+        capture_output=True, text=True, timeout=180, cwd=STATE)
+    text = json.loads(out.stdout).get("result", "")
+    return json.loads(text[text.find("{"): text.rfind("}") + 1])
+
+
+def ask_studio(sid, label, snap):
+    tasks = [r for r in (snap.get("routes") or []) if str(r.get("from", "")).endswith("architect")]
+    prompt = (
+        f"You audit one AI dev studio ({label}, project {snap.get('project')}): an architect plus workers that talk through a router.\n"
+        "Judge from this snapshot only. Reply with JSON only: {\"status\": \"progressing|idle|stalled|looping|off-scope\", "
+        "\"summary\": \"one sentence for Claude\", \"concern\": \"empty or one sentence\", \"needs_claude\": true|false}.\n"
+        "progressing = agents working and routes/commits moving; idle = nobody working, nothing pending; stalled = agents marked working "
+        "but no new routes or commits; looping = the same messages or fixes repeat; off-scope = commits clearly unrelated to every task and to the project.\n"
+        "Workers run in parallel, so commits answer different task messages, not just the newest one. Check each recent commit against ALL the "
+        "architect's task messages below: does it fit any of them? Use off-scope only when a commit clearly matches none of them and is also "
+        "unrelated to the project; a commit for an earlier, parallel or follow-up task is fine.\n"
+        "needs_claude is true only for stalled, looping or off-scope.\n"
+        f"Architect's task messages (architect -> anyone): {json.dumps(tasks)}\n\nSnapshot:\n{json.dumps(snap, indent=1)[:10000]}")
+    v = haiku_json(prompt)
+    if v.get("status") not in STUDIO_STATUS[:-1]:
+        v["status"] = "idle"
+    return {"studio": sid, "status": v["status"], "summary": str(v.get("summary", "")), "concern": str(v.get("concern", "")),
+            "needs_claude": bool(v.get("needs_claude")) and v["status"] in ("stalled", "looping", "off-scope")}
+
+
+def studio_pass(prev):
+    """One verdict per studio. Haiku only when that studio's snapshot changed; unreachable never asks Haiku."""
+    try:
+        snaps = _load_snap().everyone()
+    except Exception as e:
+        append("audit.log", f"{now()} studio snapshot failed: {e}")
+        return prev.get("studios") or {}, prev.get("studio_worst"), prev.get("studio_alerted") or []
+    labels = {m["id"]: m.get("label", m["id"]) for m in cfg.machines()}
+    before, studios = prev.get("studios") or {}, {}
+    alerted = []
+    for sid, snap in snaps.items():
+        if snap.get("note") == "no ssh route":
+            continue    # not set up (disabled machine): not an outage
+        old = before.get(sid) or {}
+        entry = {"label": labels.get(sid, sid), "at": now()}
+        if not snap.get("online"):
+            entry.update(status="unreachable", summary=snap.get("note") or "unreachable", concern="", needs_claude=False,
+                         agents=[], routes=[], commits=[], sig=old.get("sig"), changed_at=old.get("changed_at"), asked_at=old.get("asked_at"))
+            studios[sid] = entry
+            continue
+        sig = hashlib.sha1(json.dumps({"a": snap.get("agents"), "r": [r.get("t") for r in snap.get("routes", [])],
+                                       "c": [c["hash"] for c in snap.get("commits", [])]}, sort_keys=True).encode()).hexdigest()
+        changed = sig != old.get("sig") or old.get("status") in (None, "unreachable")
+        entry.update(agents=snap.get("agents", []), routes=snap.get("routes", []), commits=snap.get("commits", []), sig=sig,
+                     changed_at=time.time() if changed else old.get("changed_at", time.time()), asked_at=old.get("asked_at"))
+        if changed:
+            try:
+                v = ask_studio(sid, entry["label"], snap)
+                entry.update(status=v["status"], summary=v["summary"], concern=v["concern"], needs_claude=v["needs_claude"], asked_at=time.time())
+                append("audit.log", f"{now()} haiku {sid}: {json.dumps(v)}")
+            except Exception as e:
+                entry.update(status=old.get("status", "idle") if old.get("status") != "unreachable" else "idle",
+                             summary=f"Haiku review failed: {e}", concern="", needs_claude=False)
+        else:
+            entry.update(status=old.get("status", "idle"), summary=old.get("summary", ""), concern=old.get("concern", ""),
+                         needs_claude=old.get("needs_claude", False))
+            working = any(a.get("status") == "working" for a in snap.get("agents", []))
+            if entry["status"] == "progressing" and working and time.time() - entry["changed_at"] > STALL_AFTER:
+                entry.update(status="stalled", summary=f"Agents show working but nothing new for {int((time.time() - entry['changed_at']) // 60)} min.",
+                             concern="No new routes or commits.", needs_claude=True)
+        studios[sid] = entry
+        key = f"{sid}:{entry['status']}"
+        if entry["needs_claude"]:
+            alerted.append(key)
+            if key not in (prev.get("studio_alerted") or []):    # once per problem: stays quiet until it clears
+                append("alerts.log", f"{now()} ALERT studio {entry['label']} {entry['status']}: {entry['summary']} {entry['concern']}")
+    live = {k: v for k, v in studios.items() if v["status"] in SEVERITY}
+    pool = live or studios
+    worst = None
+    if pool:
+        sid = max(pool, key=lambda k: SEVERITY.get(pool[k]["status"], -1))
+        worst = {"id": sid, "label": pool[sid]["label"], "status": pool[sid]["status"], "summary": pool[sid]["summary"]}
+    for sid, e in studios.items():
+        print(f"studio {e['label']}: {e['status']} - {e['summary']}")
+    return studios, worst, alerted
+
+
+def one_pass():
+    prev = load(os.path.join(STATE, "latest.json"), {}) or {}
+    studios, worst, studio_alerted = studio_pass(prev)
+    snap = snapshot()
+    if "error" in snap:
+        append("audit.log", f"{now()} {snap['error']}")
+        save(os.path.join(STATE, "latest.json"), dict(prev, studios=studios, studio_worst=worst, studio_alerted=studio_alerted))
+        return
+    raised = flags(snap, prev.get("snapshot"))
+    m2 = [(w, t.get("status"), t.get("steps")) for w in mini_ids() for t in (snap.get(w) or {}).get("tasks", [])]
+    sig = hashlib.sha1(json.dumps({k: snap.get(k) for k in ("tasks", "findings")} |
+                                  {"steps": (snap.get("active") or {}).get("steps"), "m2": m2}, sort_keys=True).encode()).hexdigest()
+    last_haiku = prev.get("haiku_at", 0)
+    changed = sig != prev.get("sig")
+    due = changed and time.time() - last_haiku >= HAIKU_EVERY
+    verdict = prev.get("verdict")
+    haiku_at = last_haiku
+    # Only problems not already reported reach Claude; a known one stays quiet until it clears and comes back.
+    alerted = [f for f in prev.get("alerted", []) if f in raised]
+    new_flags = [f for f in raised if f not in prev.get("flags", []) and f not in alerted]
+    if new_flags or due:
+        verdict = ask_haiku(snap, raised)
+        haiku_at = time.time()
+        append("audit.log", f"{now()} haiku: {json.dumps(verdict)}")
+        prev_status = (prev.get("verdict") or {}).get("status")
+        changed_state = verdict.get("status") in ("done", "failed", "stuck", "looping") and verdict.get("status") != prev_status
+        if new_flags or changed_state:
+            alerted += new_flags
+            append("alerts.log", f"{now()} ALERT {verdict.get('status')}: {verdict.get('summary')} "
+                                 f"{verdict.get('concern', '')} flags={new_flags}")
+    a = snap.get("active")
+    append("audit.log", f"{now()} {'running ' + a['title'] + ' step ' + str(a['steps']) if a else 'idle'}"
+                        f"{' changed' if changed else ''}{' flags=' + str(raised) if raised else ''}")
+    save(os.path.join(STATE, "latest.json"),
+         {"snapshot": snap, "flags": raised, "sig": sig, "verdict": verdict, "haiku_at": haiku_at, "alerted": alerted,
+          "studios": studios, "studio_worst": worst, "studio_alerted": studio_alerted})
+
+
+def main():
+    if AUDIT is None:
+        print("no audit target configured")    # the owner sets the audit block in the machine config
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--loop":
+        every = int(sys.argv[2]) if len(sys.argv) > 2 else 120
+        while True:
+            try:
+                one_pass()
+            except Exception as e:
+                append("audit.log", f"{now()} pass failed: {e}")
+            time.sleep(every)
+    one_pass()
+
+
+if __name__ == "__main__":
+    main()
