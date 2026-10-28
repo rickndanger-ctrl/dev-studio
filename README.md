@@ -61,6 +61,48 @@ is free and starts fewer workers if they wouldn't fit. Built on [Herdr](https://
 which keeps every agent running in the background and tells the board who is working, done,
 or waiting on you.
 
+## What's in the box
+
+A small AI dev studio, a control room to watch and drive it, and two worked examples.
+
+### The studio (this folder)
+
+The agents and the plumbing between them.
+
+| Part | What it is |
+|---|---|
+| [`bin/studio`](bin/studio) | The command: start a studio, send a message, ask a teammate. |
+| [`router/`](router/) | The message router (JEV): every message between agents goes through it, so it can be seen and logged. |
+| [`roles/`](roles/) | The role briefs: architect, main session, workers. |
+| [`ui/`](ui/) | The board that shows the team and its messages in a terminal and in a browser. |
+| [`docs/MIXED-TEAMS.md`](docs/MIXED-TEAMS.md) | Running Claude Code and Codex in the same team, and when to use which. |
+
+### The control room ([`control/`](control/))
+
+Runs on your own machine and talks to every studio over SSH. See [`control/README.md`](control/README.md).
+
+| Part | What it is |
+|---|---|
+| Viewer | [`control/viewer/`](control/viewer/): a live page of every machine and who relayed what to whom. |
+| Auditor | [`control/bin/re-audit`](control/bin/re-audit): a reviewer model reads each studio's state and says whether it is progressing, stalled, looping or off-scope. |
+| Dispatch and watch | [`control/bin/dispatch`](control/bin/dispatch), [`control/bin/onmini`](control/bin/onmini) and [`control/bin/studio-watch`](control/bin/studio-watch): hand a brief to a studio's architect, run a script on a remote machine, watch the studios. |
+| Bar widget | [`control/omarchy-plugin/`](control/omarchy-plugin/) and [`control/bin/barstat`](control/bin/barstat): working count and tooltip for the Omarchy bar. |
+| Local jobs | [`control/bin/localq`](control/bin/localq): a queue of small jobs for local models, with a gate and your approval before anything runs on a remote machine. |
+| Setup | [`control/install.sh`](control/install.sh) and [`control/bin/bootstrap`](control/bin/bootstrap): check tools, write the config, install the services. |
+| Publish tools | [`control/hooks/pre-push`](control/hooks/pre-push), [`control/test/privacy.sh`](control/test/privacy.sh), [`control/bin/publish-export`](control/bin/publish-export): keep private names out of what you publish. |
+
+### Examples
+
+- [`examples/camera-motion/`](examples/camera-motion/): a small project the studio built end to end, with camera-motion presets, validation and exporters. See its [README](examples/camera-motion/README.md).
+- [`examples/video-studio/`](examples/video-studio/): the second project, turning a still photo and a camera move into a short clip, plus a multi-shot planner. See its [README](examples/video-studio/README.md).
+
+### Set it up from scratch
+
+1. Install the studio: clone this repo and run `./install.sh` (see "Install" below).
+2. Install the control room: `control/bin/bootstrap` (add `--dry-run` first to see what it will do).
+3. Copy `control/config/machines.example.json` to `~/.config/re-studio/machines.json` if bootstrap has not already, and put your own machines in it.
+4. Start the services with `control/bin/bootstrap --enable`, then open the viewer at http://127.0.0.1:8765.
+
 ## Install (once per Mac)
 
 ```bash
