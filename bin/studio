@@ -166,6 +166,89 @@ grant_under() { # root path
   case $p in "$1"/*) printf ' --add-dir %s' "$(printf %q "$p")" ;; esac
 }
 
+# The owner's extra folders for codex workers: each valid line of <project>/.studio/codex-writable
+# becomes " --add-dir <real path>". Lines are relative to the project; # starts a comment; blank
+# lines are skipped. A line is valid only if it resolves (pwd -P) to a folder inside the project and
+# not inside its .git. Anything else is skipped with a warning that names the line.
+# macOS folders are case-insensitive, so ".GIT" is the folder ".git". Every name check below runs on a
+# lower-cased copy of the path.
+_lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+# Sets BELOW to the part of real below project, both lower-cased. Returns 1 if real is not inside project.
+_below() { # real project
+  local r p
+  r=$(_lower "$1"); p=$(_lower "$2")
+  case $r in
+    "$p") BELOW=''; return 0 ;;
+    "$p"/*) BELOW=${r#"$p"/}; return 0 ;;
+  esac
+  return 1
+}
+
+# Paths (relative to the project, lower-cased) that codex is never granted: the project root, anything
+# with a .git component at any depth, .studio itself, .studio/mail and below, and .claude and .codex and
+# below. Other .studio folders (such as .studio/localq) are fine.
+_writable_forbidden() { # relative-lower-path
+  case $1 in
+    ''|.git|.git/*|*/.git|*/.git/*|.studio|.studio/mail|.studio/mail/*|.claude|.claude/*|.codex|.codex/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Check one line of codex-writable. On success sets WRITABLE_REAL to the folder's real path.
+# Lexical checks first; then the deepest existing parent is resolved with pwd -P and must be inside the
+# project (so a symlinked parent pointing outside stops here, before anything is created); then the
+# folder is created; then its real path is checked again.
+_writable_one() { # project-dir rel where
+  local project=$1 rel=$2 where=$3 lrel cur base real
+  case $rel in
+    /*) warn "$where ($rel) is an absolute path; use a path inside the project."; return 1 ;;
+  esac
+  case "/$rel/" in */../*) warn "$where ($rel) has a '..' part; use a path inside the project."; return 1 ;; esac
+  lrel=$(_lower "$rel")
+  case "/$lrel/" in */.git/*) warn "$where ($rel) is inside .git, which is never granted."; return 1 ;; esac
+  case $lrel in
+    .|./) warn "$where ($rel) is the project root itself, which is never granted."; return 1 ;;
+    .studio|.studio/mail|.studio/mail/*) warn "$where ($rel) is .studio or .studio/mail, which is never granted."; return 1 ;;
+  esac
+  if _writable_forbidden "$lrel"; then
+    warn "$where ($rel) is never granted: .claude and .codex hold the worktrees and settings."; return 1
+  fi
+  cur="$project/$rel"
+  while [ ! -e "$cur" ] && [ "$cur" != "$project" ]; do cur=$(dirname "$cur"); done
+  base=$(cd "$cur" 2>/dev/null && pwd -P) || { warn "$where ($rel) cannot be checked."; return 1; }
+  _below "$base" "$project" || { warn "$where ($rel) resolves outside the project."; return 1; }
+  case $BELOW in
+    .git|.git/*|*/.git|*/.git/*|.studio/mail|.studio/mail/*|.claude|.claude/*|.codex|.codex/*)
+      warn "$where ($rel) resolves into a folder codex is never granted."; return 1 ;;
+  esac
+  [ -e "$project/$rel" ] || mkdir -p "$project/$rel" 2>/dev/null || { warn "$where ($rel) could not be created."; return 1; }
+  real=$(cd "$project/$rel" 2>/dev/null && pwd -P) || { warn "$where ($rel) is not a folder."; return 1; }
+  _below "$real" "$project" || { warn "$where ($rel) resolves outside the project."; return 1; }
+  if _writable_forbidden "$BELOW"; then
+    warn "$where ($rel) resolves into a folder codex is never granted."; return 1
+  fi
+  WRITABLE_REAL=$real
+  return 0
+}
+
+# The owner's extra folders for codex workers: each valid line of <project>/.studio/codex-writable
+# becomes " --add-dir <real path>". Lines are relative to the project; # starts a comment; blank lines
+# are skipped; a missing folder is created. A refused line is skipped with a warning that names it,
+# and codex still starts.
+codex_writable_grants() { # real-project studio-dir name
+  local file="$2/codex-writable" line rel out='' n=0
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    rel=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's#/*$##')
+    case $rel in ''|'#'*) continue ;; esac
+    _writable_one "$1" "$rel" "$3: codex-writable line $n" || continue
+    out="$out --add-dir $(printf %q "$WRITABLE_REAL")"
+  done < "$file"
+  printf '%s' "$out"
+}
+
 # start_agent pane label role name model kind [worktree]
 start_agent() {
   local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir sandbox='' adds='' real_project='' outbox='' common='' wd=''
@@ -215,6 +298,7 @@ start_agent() {
         case $wd in ''|/*) ;; *) wd="$dir/$wd" ;; esac
         adds="$adds$(grant_under "$common" "$wd")"
       fi
+      adds="$adds$(codex_writable_grants "$real_project" "$STUDIO_DIR" "$name")"
     fi
     cmd="cd $(printf %q "$dir") && codex -m $model $sandbox$adds $(printf %q "You are $name. Read $brief now and follow it as your role for this whole session. Then say which role you have and wait.")"
   else

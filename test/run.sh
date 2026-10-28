@@ -230,6 +230,85 @@ check "warns that the outbox is not granted" grep -q "Not granting trap-architec
 check "no grant points at the symlink target" sh -c "! grep -q -- 'elsewhere' '$MOCK_LOG'"
 check "codex still starts, without that grant" has "codex -m gpt-6.1-sol"
 
+echo "Owner's codex-writable folders: listed folders granted by real path; refusals; nothing created outside"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+mkdir -p "$PROJECT/docs" "$PROJECT/out/renders" "$PROJECT/.studio/localq" "$HOME/Developer/sibling" "$T/elsewhere"
+ln -s "$T/elsewhere" "$PROJECT/linkout"
+cat > "$PROJECT/.studio/codex-writable" <<EOF
+# the owner's folders
+docs
+
+out/renders
+new/deeper/dir
+../sibling
+$T/elsewhere
+.git/hooks
+.git/config
+.git
+.studio
+.studio/mail
+.studio/localq
+.studio/mail/x
+.
+linkout/newchild
+docs/../out
+.GIT/hooks
+.claude/worktrees
+.codex
+EOF
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+writable_out=$(STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex 2>&1)
+check "listed docs folder granted by real path"  sh -c "grep -F 'omac-worker-1.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/docs'"
+check "listed out/renders granted"               sh -c "grep -F 'omac-worker-1.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/out/renders'"
+check "worker-2 gets the docs folder too"        sh -c "grep -F 'omac-worker-2.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/docs'"
+check "missing dir is created"                   test -d "$PROJECT/new/deeper/dir"
+check "missing dir is granted once created"      sh -c "grep -F 'omac-worker-1.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/new/deeper/dir'"
+check ".studio/localq (another .studio folder) is granted"  sh -c "grep -F 'omac-worker-1.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/.studio/localq'"
+check "architect does not get the docs folder"   sh -c "! grep -F 'omac-architect.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/docs'"
+check "main does not get the docs folder"        sh -c "! grep -F 'omac-main.md' '$MOCK_LOG' | grep -q -- '--add-dir $OMAC_REAL/docs'"
+check "no grant of the project root"             sh -c "! grep -q -- '--add-dir $OMAC_REAL ' '$MOCK_LOG'"
+check "no grant of .git or .git/hooks/config"    sh -c "! grep -q -- '--add-dir $OMAC_REAL/.git ' '$MOCK_LOG' && ! grep -q -- '/\\.git/hooks' '$MOCK_LOG' && ! grep -q -- '/\\.git/config' '$MOCK_LOG'"
+check "no grant of .studio itself"               sh -c "! grep -q -- '--add-dir $OMAC_REAL/.studio ' '$MOCK_LOG'"
+check "no grant under .studio/mail except the outbox"  sh -c "! grep -q -- 'mail/x' '$MOCK_LOG'"
+check "no grant of an outside path"              sh -c "! grep -q 'sibling' '$MOCK_LOG'"
+check "no grant of the absolute path"            sh -c "! grep -q 'elsewhere' '$MOCK_LOG'"
+check "no grant through the symlink"             sh -c "! grep -q 'linkout' '$MOCK_LOG'"
+check "nothing created outside the project"      sh -c "! test -e '$T/elsewhere/newchild'"
+check "codex still starts after refusals"        has "codex -m gpt-6.1-sol"
+check "absolute path refused with its line"      grep -q "codex-writable line 7 (.*elsewhere) is an absolute path" <<<"$writable_out"
+check ".. refused with its line"                 grep -q "codex-writable line 6 (../sibling) has a '..' part" <<<"$writable_out"
+check "project root refused with its line"       grep -q "codex-writable line 15 (.) is the project root itself" <<<"$writable_out"
+check ".git/hooks refused with its line"         grep -q "codex-writable line 8 (.git/hooks) is inside .git" <<<"$writable_out"
+check ".studio refused with its line"            grep -q "codex-writable line 11 (.studio) is .studio or .studio/mail" <<<"$writable_out"
+check ".studio/mail refused with its line"       grep -q "codex-writable line 12 (.studio/mail) is .studio or .studio/mail" <<<"$writable_out"
+check "symlink escape refused with its line"     grep -q "codex-writable line 16 (linkout/newchild) resolves outside the project" <<<"$writable_out"
+check "docs/../out refused with its line"        grep -q "codex-writable line 17 (docs/../out) has a '..' part" <<<"$writable_out"
+check "uppercase .GIT refused with its line"     grep -q "codex-writable line 18 (.GIT/hooks) is inside .git" <<<"$writable_out"
+check ".claude refused with its line"            grep -q "codex-writable line 19 (.claude/worktrees) is never granted" <<<"$writable_out"
+check ".codex refused with its line"             grep -q "codex-writable line 20 (.codex) is never granted" <<<"$writable_out"
+check "no grant under .claude or .codex"         sh -c "! grep -q -- '--add-dir [^ ]*/\.claude' '$MOCK_LOG' && ! grep -q -- '--add-dir [^ ]*/\.codex' '$MOCK_LOG'"
+check "no grant under any .git spelling"         sh -c "! grep -qi -- '--add-dir [^ ]*/\.git/hooks' '$MOCK_LOG'"
+
+echo "No codex-writable file: workers keep only their base grants"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+rm -f "$PROJECT/.studio/codex-writable"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex >/dev/null 2>&1
+check "worker-1 has exactly its base grants"     test "$(add_dirs_of 'omac-worker-1.md')" = "$OMAC_REAL/.studio/mail/outbox
+$OMAC_REAL/.git/objects
+$OMAC_REAL/.git/refs
+$OMAC_REAL/.git/logs
+$OMAC_REAL/.git/worktrees/worker-1"
+
+echo "Claude roles never get the owner's folders"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"   # the codex runs above saved AGENT_KIND=codex
+cat > "$PROJECT/.studio/codex-writable" <<EOF
+docs
+EOF
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach >/dev/null 2>&1
+check "claude team gets no --add-dir at all"     sh -c "! grep -q -- '--add-dir' '$MOCK_LOG'"
+rm -f "$PROJECT/.studio/codex-writable"
+
 echo "Little memory free: workers capped"
 : > "$MOCK_STATE"; : > "$MOCK_LOG"
 printf 'SOUNDS=0\nWORKERS=4\n' > "$STUDIO_CONF"

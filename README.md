@@ -30,6 +30,32 @@ Never the `.git` root, `hooks/`, `config`, `info/` or `packed-refs`. Verified wi
 0.164 sandbox: add, commit, reset and branch create work. Branch and tag delete still prompt (they
 need `.git/packed-refs.lock`). Commit and reset print a harmless `packed-refs.lock` warning.
 
+**Extra writable folders for codex workers.** To let codex workers write to a folder of your own
+(for example, a place for generated output), list it in `<project>/.studio/codex-writable`, one
+path per line, relative to the project:
+
+```
+# comments and blank lines are ignored
+out/renders
+docs
+```
+
+Each valid line becomes one more `--add-dir` for codex workers only (architect and main are not
+affected). A missing folder is created. Codex still starts when a line is refused; each refusal is
+a warning that names the line number. A line is refused when it is:
+
+- an absolute path, or has a `..` part;
+- the project root itself;
+- inside `.git` (at any depth, in any letter case);
+- `.studio` itself, or `.studio/mail` and below. Other `.studio` folders (such as `.studio/localq`)
+  are fine;
+- inside `.claude` or `.codex`, which hold the worktrees and settings;
+- or it resolves outside the project, through a symlink or otherwise. The deepest existing parent
+  is checked before anything is created, and the new folder's real path is checked again after.
+
+The file is read when a team starts, so restart the team (`studio stop`, then `studio up`) after
+changing it.
+
 **Built for Macs with limited memory.** Before starting, the Studio checks how much memory
 is free and starts fewer workers if they wouldn't fit. Built on [Herdr](https://herdr.dev),
 which keeps every agent running in the background and tells the board who is working, done,
