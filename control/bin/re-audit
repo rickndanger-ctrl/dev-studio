@@ -357,21 +357,36 @@ def ask_studio(sid, label, snap):
             "needs_claude": bool(v.get("needs_claude")) and v["status"] in ("stalled", "looping", "off-scope")}
 
 
+def studio_units(snaps):
+    """One unit per studio team on each machine: (key "<mid>/<team>", label "<machine label> · <team label>", snapshot).
+    The architect-only team is labelled 'studio'. A machine that is down is one unit under its machine name."""
+    labels = {m["id"]: m.get("label", m["id"]) for m in cfg.machines()}
+    units = []
+    for mid, snap in snaps.items():
+        if snap.get("note") == "no ssh route":
+            continue    # not set up (disabled machine): not an outage
+        base = labels.get(mid, mid)
+        if not snap.get("online"):
+            units.append((f"{mid}/studio", base, snap))
+            continue
+        for t in snap.get("teams") or []:
+            team = t.get("team") or "studio"
+            units.append((f"{mid}/{team}", f"{base} · {team}", dict(t, online=True, project=snap.get("project"))))
+    return units
+
+
 def studio_pass(prev):
-    """One verdict per studio. Haiku only when that studio's snapshot changed; unreachable never asks Haiku."""
+    """One verdict per studio team. Haiku only when that team's snapshot changed; unreachable never asks Haiku."""
     try:
         snaps = _load_snap().everyone()
     except Exception as e:
         append("audit.log", f"{now()} studio snapshot failed: {e}")
         return prev.get("studios") or {}, prev.get("studio_worst"), prev.get("studio_alerted") or []
-    labels = {m["id"]: m.get("label", m["id"]) for m in cfg.machines()}
     before, studios = prev.get("studios") or {}, {}
     alerted = []
-    for sid, snap in snaps.items():
-        if snap.get("note") == "no ssh route":
-            continue    # not set up (disabled machine): not an outage
+    for sid, label, snap in studio_units(snaps):
         old = before.get(sid) or {}
-        entry = {"label": labels.get(sid, sid), "at": now()}
+        entry = {"label": label, "at": now()}
         if not snap.get("online"):
             entry.update(status="unreachable", summary=snap.get("note") or "unreachable", concern="", needs_claude=False,
                          agents=[], routes=[], commits=[], sig=old.get("sig"), changed_at=old.get("changed_at"), asked_at=old.get("asked_at"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One JSON snapshot of every studio: agents, recent JEV routes, commits from the last hour.
+"""One JSON snapshot of every studio: agents, recent JEV routes, commits from the last hour, per studio team.
 
   studio-snap.py                 every machine in the config: the laptop here, Minis over ssh
   studio-snap.py --local         this machine only (what the Minis run; the script arrives on stdin)
@@ -7,14 +7,22 @@
   --remote-path P / --studio-dirs JSON   (with --local) PATH prefix and studio folders; the config's remote_path / studio_dirs
 
 Per machine: {"online", "project", "agents": [{name, status}], "routes": [last 5 route rows],
-"commits": [{hash, subject, files}]}. Read-only. Runs on Python 3.8+ with the standard library
-(the Minis' system Python), so it must not import re_studio_config when run with --local.
+"commits": [{hash, subject, files}], "teams": [one snapshot per studio team]}. A team snapshot is
+{"team", "kind", "idle", "agents", "routes" (its last 5 route rows), "commits" (of the repos its agents work in)}.
+Read-only. Runs on Python 3.8+ with the standard library (the Minis' system Python). The Minis get
+lib/studio_teams.py prepended to this script on stdin, so with --local it must not import re_studio_config.
 """
 import glob, json, os, shlex, subprocess, sys
 
 if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
-    print("snapshot every studio's agents, routes, and recent commits as JSON")
+    print("snapshot every studio's agents, routes, and recent commits as JSON, one snapshot per team")
     sys.exit(0)
+
+try:
+    import studio_teams
+except ImportError:    # on a Mini the library arrives prepended to this script on stdin (see everyone())
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+    import studio_teams
 
 
 DEFAULT_REMOTE_PATH = "$HOME/.local/bin:/opt/homebrew/bin"
@@ -71,13 +79,18 @@ def active_log(is_laptop, dirs=None):
     return best or (max(cands, key=os.path.getmtime) if cands else "")
 
 
-def agents(session):
+def agent_rows(session):
+    """The herdr agent rows as they are (name, agent kind, agent_status, cwd, ...)."""
     try:
         r = subprocess.run(["herdr", "--session", session, "agent", "list"], capture_output=True, text=True, timeout=8)
         rows = json.loads(r.stdout).get("result", {}).get("agents", [])
     except Exception:
         return []
-    return [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in rows if a.get("name")]
+    return [a for a in rows if a.get("name")]
+
+
+def agents(session):
+    return [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in agent_rows(session)]
 
 
 def commits(repo):
@@ -96,11 +109,66 @@ def commits(repo):
     return out
 
 
+def toplevel(cwd):
+    """The git repo an agent works in (a worktree counts as its own repo), or '' when it is not in one."""
+    if not cwd:
+        return ""
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def team_snapshots(rows, routes, fallback_repo=""):
+    """One snapshot per studio team: its agents, its last 5 route rows, and the commits of the repos its agents work in.
+    Teams in one repo share those commits. Without a repo for a team, the machine's project is used."""
+    cache = {}
+
+    def repo_commits(path):
+        if path not in cache:
+            cache[path] = commits(path)
+        return cache[path]
+
+    out = []
+    for g in studio_teams.group(rows):
+        repos = []
+        for a in g["agents"]:
+            top = toplevel(a.get("cwd"))
+            if top and top not in repos:
+                repos.append(top)
+        if not repos and fallback_repo:
+            repos = [fallback_repo]
+        seen, team_commits = set(), []
+        for repo in repos:
+            for c in repo_commits(repo):
+                if c["hash"] not in seen:
+                    seen.add(c["hash"])
+                    team_commits.append(c)
+        mine = [r for r in routes if studio_teams.team_of_route(r) == g["team"]]
+        out.append({"team": g["team"], "kind": g["kind"], "idle": g["idle"],
+                    "agents": [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in g["agents"]],
+                    "routes": mine[-5:], "commits": team_commits})
+    return out
+
+
 def local(session, is_laptop, dirs=None):
     log = active_log(is_laptop, dirs)
     repo = os.path.dirname(os.path.dirname(log)) if log else ""
-    return {"online": True, "project": os.path.basename(repo), "agents": agents(session),
-            "routes": _routes(log)[-5:] if log else [], "commits": commits(repo) if repo else []}
+    rows = agent_rows(session)
+    routes = _routes(log) if log else []
+    return {"online": True, "project": os.path.basename(repo),
+            "agents": [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in rows],
+            "routes": routes[-5:], "commits": commits(repo) if repo else [],
+            "teams": team_snapshots(rows, routes, repo)}
+
+
+def library_prelude(lib_src):
+    """Code that puts studio_teams into sys.modules on a Mini, where the script arrives on stdin."""
+    return ("import sys as _sys, types as _types\n"
+            "_teams = _types.ModuleType('studio_teams')\n"
+            "exec(compile(%r, 'studio_teams.py', 'exec'), _teams.__dict__)\n"
+            "_sys.modules['studio_teams'] = _teams\n") % lib_src
 
 
 def everyone(session=None):
@@ -113,6 +181,8 @@ def everyone(session=None):
     set_path(remote_path)
     with open(os.path.realpath(__file__)) as f:
         src = f.read()
+    with open(os.path.join(os.path.dirname(here), "lib", "studio_teams.py")) as f:
+        src = library_prelude(f.read()) + src
     out = {}
     for m in cfg.machines():
         mid = m["id"]

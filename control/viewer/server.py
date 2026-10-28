@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import re_studio_config as cfg
 import localq_share
+import studio_teams
 
 HOME = os.path.expanduser("~")
 STATE = cfg.state_dir()
@@ -43,7 +44,9 @@ python3 - <<'PY2'
 import glob, os, json
 cands = []
 for d in @STUDIO_DIRS@:
-    cands += glob.glob(os.path.join(os.path.expanduser(d), '.studio', 'router.log'))
+    base = os.path.join(os.path.expanduser(d), '.studio')
+    cands += glob.glob(os.path.join(base, 'router.log'))
+    cands += glob.glob(os.path.join(base, 'worktrees', '*', 'router.log')) + glob.glob(os.path.join(base, 'worktrees', '*', '.studio', 'router.log'))
 cands += glob.glob(os.path.expanduser('~/Projects/*/.studio/router.log'))
 best = None; bestt = -1
 for rl in cands:
@@ -64,10 +67,16 @@ if best:
     slug = os.path.basename(os.path.dirname(os.path.dirname(best)))
     print('@@PROJECT ' + slug)
     print('@@ROUTER')
-    try:
-        print('\n'.join(open(best).read().splitlines()[-120:]))
-    except Exception:
-        pass
+    seen = set()
+    for rl in [best] + cands:
+        real = os.path.realpath(rl)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            print('\n'.join(open(rl).read().splitlines()[-120:]))
+        except Exception:
+            pass
 PY2
 echo '@@APP'; for n in @APP_PROCESSES@; do pgrep -x "$n" >/dev/null 2>&1 && echo "$n"; done
 echo '@@ROOM'; python3 - <<'PY' 2>/dev/null
@@ -212,7 +221,7 @@ def short(v, n=90):
 # ---------- laptop ----------
 
 def _role(n):
-    m = re.search(r"(architect|main|messenger|worker-\d+)$", n or "")
+    m = re.search(studio_teams.ROLE_RX, n or "")
     return m.group(1) if m else (n or "?")
 
 
@@ -415,12 +424,11 @@ def parse_mini(out):
     agents = []
     try:
         raw = json.loads("\n".join(parts.get("AGENTS", [])) or "{}")
-        import re as _re
         for a in raw.get("result", {}).get("agents", []):
             nm = a.get("name") or ""
-            if not _re.search(r"(architect|main|messenger|worker-\d+)$", nm):
+            if not re.search(studio_teams.ROLE_RX, nm):
                 continue   # skip unnamed / pane-id agents (stale detection)
-            agents.append({"name": nm, "status": a.get("agent_status", "?"), "kind": a.get("agent", "")})
+            agents.append({"name": nm, "status": a.get("agent_status", "?"), "kind": a.get("agent", ""), "agent": a.get("agent", "")})
     except Exception:
         pass
     rows = []
@@ -448,6 +456,36 @@ def parse_mini(out):
             cpu = 0.0
         procs.append({"pid": pid, "cpu": cpu, "name": name, "where": "~" if home and cwd.rstrip("/") == home else os.path.basename(cwd.rstrip("/")) or cwd, "tty": tty.strip()})
     return agents, rows, proj, [x for x in parts.get("APP", []) if x.strip()], room, mem, procs
+
+
+TEAM_KIND_NAME = {"claude": "Claude", "codex": "Codex"}
+
+
+def route_item(row):
+    """One route row as the viewer draws it: roles only for from/to, "dropped" when it went nowhere."""
+    tos = row.get("to") or ([row.get("addressed")] if row.get("addressed") not in (None, "auto") else [])
+    return {"from": _role(row.get("from")), "to": ", ".join(_role(t) for t in tos) if tos else "dropped",
+            "text": row.get("text", ""), "decision": row.get("decision", ""), "t": row.get("t", 0)}
+
+
+def build_teams(agents, rows):
+    """Group a machine's agents into teams (lib/studio_teams) and give each its last 30 route rows and a label."""
+    teams = studio_teams.group(agents)
+    # route rows only, oldest first
+    routes = sorted((r for _h, r in rows if r.get("kind") == "route"), key=lambda r: r.get("t", 0))
+    for t in teams:
+        t["routes"] = []
+    by_name = {t["team"]: t for t in teams}
+    for r in routes:
+        # team_of_route wants one recipient, not the list
+        probe = dict(r, to=(r.get("to") or [None])[0] if isinstance(r.get("to"), list) else r.get("to"))
+        name = studio_teams.team_of_route(probe)
+        if name in by_name:
+            by_name[name]["routes"].append(route_item(r))
+    for t in teams:
+        t["routes"] = t["routes"][-30:]
+        t["label"] = f'{t["team"] or "studio"} · {TEAM_KIND_NAME.get(t["kind"], "Mixed")}'
+    return teams
 
 
 def mini_loop(mid):
@@ -478,6 +516,7 @@ def mini_loop(mid):
             time.sleep(15)
             continue
         agents, rows, proj, bt, room, mem, procs = parse_mini(out)
+        all_agents = agents   # every studio agent on the machine, all teams; `agents` below is scoped to the active project
         # Keep only the active studio's agents (named "<project-slug>-role"); fall back to all if no match.
         if proj:
             scoped = [a for a in agents if str(a.get("name", "")).startswith(proj + "-")]
@@ -546,6 +585,7 @@ def mini_loop(mid):
                               "to": ", ".join(_role(t) for t in tos) if tos else "dropped",
                               "text": _r.get("text", ""), "decision": _r.get("decision", ""), "t": _r.get("t", 0)})
         comms = comms[-5:]
+        teams = build_teams(all_agents, rows)
         jev = {"router": "", "handled": 0, "last": ""}
         for h, row in rows:
             k = row.get("kind")
@@ -573,7 +613,7 @@ def mini_loop(mid):
             prev = state["minis"][mid]
             if not jev["last"]:
                 jev["last"] = prev.get("jev", {}).get("last", "")
-            prev.update(online=True, note=route, agents=agents, project=os.path.basename(proj), jev=jev, app=bt, room=room, mem=mem, others=others, comms=comms)
+            prev.update(online=True, note=route, agents=agents, teams=teams, project=os.path.basename(proj), jev=jev, app=bt, room=room, mem=mem, others=others, comms=comms)
         publish()
         first = False
         time.sleep(8)

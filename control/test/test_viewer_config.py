@@ -87,6 +87,59 @@ class Configured(unittest.TestCase):
         self.assertIsNone(load_server(write_config("half", {"audit": {"app": "Fake App"}})).AUDIT)
 
 
+class Teams(unittest.TestCase):
+    """minis[mid].teams: agents grouped by team, each team with its own routes (docs/TWO-TEAMS-CONTRACT.md)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = load_server(write_config("teams", {}))
+
+    def agent(self, name, kind, status):
+        return {"name": name, "status": status, "kind": kind, "agent": kind}
+
+    def row(self, src, dst, text, t):
+        return ("h" + text, {"kind": "route", "from": src, "to": [dst], "text": text, "decision": "forward", "t": t})
+
+    def test_two_teams_get_their_own_agents_label_and_routes(self):
+        agents = [self.agent("one-architect", "claude", "working"), self.agent("one-worker-1", "claude", "idle"),
+                  self.agent("one-codex-architect", "codex", "idle"), self.agent("one-codex-worker-1", "codex", "idle")]
+        rows = [self.row("one-architect", "one-worker-1", "claude job", 10), self.row("one-codex-architect", "one-codex-worker-1", "codex job", 20),
+                self.row("one-worker-1", "one-architect", "claude done", 30)]
+        teams = self.server.build_teams(agents, rows)
+        self.assertEqual([t["team"] for t in teams], ["one", "one-codex"])
+        self.assertEqual([t["label"] for t in teams], ["one · Claude", "one-codex · Codex"])
+        self.assertEqual([t["idle"] for t in teams], [False, True])
+        self.assertEqual([r["text"] for r in teams[0]["routes"]], ["claude job", "claude done"])
+        self.assertEqual([r["text"] for r in teams[1]["routes"]], ["codex job"])
+        self.assertEqual(teams[0]["routes"][0]["from"], "architect")   # roles only, as the page draws them
+
+    def test_a_team_without_routes_has_an_empty_list_and_other_rows_are_ignored(self):
+        agents = [self.agent("solo-architect", "claude", "idle")]
+        rows = [self.row("stranger-architect", "stranger-main", "elsewhere", 5), ("x", {"kind": "health", "handled": 3})]
+        self.assertEqual(self.server.build_teams(agents, rows)[0]["routes"], [])
+
+    def test_routes_are_capped_at_the_last_30(self):
+        agents = [self.agent("big-architect", "claude", "working")]
+        rows = [self.row("big-architect", "big-main", f"m{i}", i) for i in range(45)]
+        routes = self.server.build_teams(agents, rows)[0]["routes"]
+        self.assertEqual((len(routes), routes[0]["text"], routes[-1]["text"]), (30, "m15", "m44"))
+
+    def test_mixed_kinds_are_labelled_mixed(self):
+        agents = [self.agent("mix-architect", "claude", "idle"), self.agent("mix-main", "codex", "idle")]
+        self.assertEqual(self.server.build_teams(agents, [])[0]["label"], "mix · Mixed")
+
+    def test_probe_script_reads_every_router_log_and_worktrees(self):
+        script = self.server.mini_script("box1")
+        self.assertIn("'worktrees'", script)
+        self.assertIn("for rl in [best] + cands:", script)
+
+    def test_demo_state_has_a_machine_with_two_teams_and_an_idle_one(self):
+        demo = importlib.machinery.SourceFileLoader("demo_server_teams", os.path.join(REPO, "test", "demo_server.py")).load_module()
+        minis = demo.state()["minis"]
+        self.assertEqual([t["kind"] for t in minis["m1"]["teams"]], ["claude", "codex"])
+        self.assertEqual([t["idle"] for t in minis["m2"]["teams"]], [False, True])
+
+
 class StudioSnap(unittest.TestCase):
     def test_active_log_searches_the_given_dirs(self):
         loader = importlib.machinery.SourceFileLoader("studio_snap_cfg", os.path.join(REPO, "bin", "studio-snap.py"))

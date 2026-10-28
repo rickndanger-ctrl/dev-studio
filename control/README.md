@@ -38,6 +38,21 @@ The gate also refuses while any process named in `local_block_apps` (default `Ch
 never opens or quits an app. How to choose jobs is in [`docs/LOCAL-WORK.md`](docs/LOCAL-WORK.md); the exact rules are in
 [`docs/LOCALQ-CONTRACT.md`](docs/LOCALQ-CONTRACT.md).
 
+`localq report --since HH:MM` (or a date and time) limits the report to jobs from that time on. It still aggregates them:
+jobs by kind and status, the verdict mix and the output share, with only the five slowest jobs listed one by one.
+Two more draft kinds are available through `localq draft`: `brief` turns the architect's bullet notes into one worker
+brief, and `docstrings` asks the model for the worker's code with docstrings and comments added and the code lines
+unchanged. The worker must diff the result and keep only the comment and docstring lines; Codex reviews that one.
+A draft is a starting point, never shipped unedited.
+
+## Two teams on one machine
+
+A machine can run more than one studio team in one herdr session, for example a Claude team and a Codex team. A team
+is named by the part of its agent name before the role, so `team-alpha-worker-1` belongs to `team-alpha`; an architect
+with no prefix is the studio team. The viewer draws each team as its own cluster inside the machine's panel, with its
+own routing band. One team is always drawn open; with several, idle teams fold into one line. The auditor judges each team on its own: verdicts are
+keyed `machine/team`, and Haiku is asked once per changed team.
+
 ## Setup
 
 Requirements: `python3` (required), `ssh` (for remote machines), `herdr` (for dispatch and the studio sessions).

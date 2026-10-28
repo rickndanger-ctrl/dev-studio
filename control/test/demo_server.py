@@ -15,9 +15,16 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 INDEX = os.path.join(os.path.dirname(HERE), "viewer", "index.html")
 
 
-def agents(prefix, statuses):
+def agents(prefix, statuses, kind="claude"):
     names = ["architect", "main", "worker-1", "worker-2"]
-    return [{"name": f"{prefix}-{n}", "status": s, "kind": "claude"} for n, s in zip(names, statuses)]
+    return [{"name": f"{prefix}-{n}", "status": s, "kind": kind, "agent": kind} for n, s in zip(names, statuses)]
+
+
+def team(name, kind, statuses, routes):
+    """One team as the viewer's state carries it (see docs/TWO-TEAMS-CONTRACT.md)."""
+    ags = agents(name, statuses, kind)
+    return {"team": name, "kind": kind, "idle": not any(s in ("working", "blocked") for s in statuses), "agents": ags,
+            "routes": routes, "label": f"{name} · {kind.capitalize()}"}
 
 
 def route(src, dst, text, ago):
@@ -53,18 +60,30 @@ def state():
         },
         "minis": {
             "m1": {"label": "Mini 1", "online": True, "note": "direct", "project": "demo-app", "jev": {"router": "jev", "handled": 24, "last": ""},
-                   "agents": agents("alpha", ["done", "idle", "working", "working"]), "app": [], "mem": "41%",
+                   "agents": agents("alpha", ["done", "idle", "working", "working"]) + agents("alpha-codex", ["working", "idle", "working", "idle"], "codex"), "app": [], "mem": "41%",
                    "room": [{"project": "Demo Project", "title": "Draft the preset catalog", "member": "Drafter", "status": "running", "steps": 9, "step": "reading catalog.json"}],
                    "others": [{"name": "claude", "where": "demo-app", "busy": True, "count": 1}, {"name": "codex", "where": "scratch", "busy": False, "count": 1}],
-                   "comms": [route("alpha-architect", "alpha-worker-1", "Job 3: write tests/test_catalog.py for the new presets", 300),
-                             route("alpha-worker-2", "alpha-architect", "done: docs regenerated, commit a1b2c3d", 90),
-                             route("alpha-architect", "alpha-worker-1", "Fix the failing id check, then re-run pytest", 45)]},
+                   "comms": [route("architect", "worker-1", "Job 3: write tests/test_catalog.py for the new presets", 300),
+                             route("worker-2", "architect", "done: docs regenerated, commit a1b2c3d", 90),
+                             route("architect", "worker-1", "Fix the failing id check, then re-run pytest", 45)],
+                   "teams": [team("alpha", "claude", ["done", "idle", "working", "working"],
+                                  [route("architect", "worker-1", "Job 3: write tests/test_catalog.py for the new presets", 300),
+                                   route("worker-2", "architect", "done: docs regenerated, commit a1b2c3d", 90),
+                                   route("architect", "worker-1", "Fix the failing id check, then re-run pytest", 45)]),
+                             team("alpha-codex", "codex", ["working", "idle", "working", "idle"],
+                                  [route("architect", "worker-1", "Port the exporter to the new schema", 200),
+                                   route("worker-1", "architect", "done: exporter ported, 4 tests pass", 70)])]},
             "m2": {"label": "Mini 2", "online": True, "note": "via Mini 1", "project": "demo-app", "jev": {"router": "jev", "handled": 11, "last": ""},
                    "agents": agents("beta", ["done", "idle", "done", "done"]), "app": [], "mem": "66%",
                    "room": [{"project": "Demo Project", "title": "Review the export notes", "member": "Reader", "status": "review", "steps": 14, "step": "wrote findings.md"}],
-                   "others": [], "comms": [route("beta-architect", "beta-main", "Job 2: update README with the new flags", 900),
-                                           route("beta-main", "beta-architect", "done: README updated, commit 4e5f6a7", 700),
-                                           route("beta-architect", "beta-main", "Signed off, merged", 620)]},
+                   "others": [], "comms": [route("architect", "main", "Job 2: update README with the new flags", 900),
+                                           route("main", "architect", "done: README updated, commit 4e5f6a7", 700),
+                                           route("architect", "main", "Signed off, merged", 620)],
+                   "teams": [team("beta", "claude", ["done", "working", "done", "done"],
+                                  [route("architect", "main", "Job 2: update README with the new flags", 900),
+                                   route("main", "architect", "done: README updated, commit 4e5f6a7", 700),
+                                   route("architect", "main", "Signed off, merged", 620)]),
+                             team("beta-codex", "codex", ["idle", "idle", "idle", "idle"], [])]},
             "m3": {"label": "Mini 3", "online": False, "note": "not set up yet", "agents": []},
         },
     }

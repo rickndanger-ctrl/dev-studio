@@ -88,6 +88,7 @@ let LABELS = {};
 let CLAUDE = { x: 600, y: 400 };
 let pos = {};          // node id -> {x, y}
 let S = null;          // last state
+let RT = [];           // JEV clusters whose last route is drawn (see drawRoutes)
 
 function el(tag, attrs, parent, text) {
   const e = document.createElementNS(NS, tag);
@@ -100,10 +101,10 @@ function role(n) { const m = (n || "").match(/(architect|main|messenger|worker-\
 function clip(s, n) { s = s || ""; return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 function hub(mid) { const p = PANELS[mid]; return { x: p.x + p.w / 2, y: p.y + (p.h < 300 ? p.h / 2 : 266) }; }   // small spare panels: their middle
 // Agents around the JEV hub; those at the top get their labels above so they stay clear of the routing band.
-function drawTeam(mid, agents, h) {
+function drawTeam(mid, agents, h, rx) {
   agents.forEach((a, i) => {
     const ang = -Math.PI / 2 + (i / Math.max(agents.length, 1)) * Math.PI * 2;
-    const p = { x: h.x + Math.cos(ang) * 120, y: h.y + Math.sin(ang) * 75 };
+    const p = { x: h.x + Math.cos(ang) * (rx || 120), y: h.y + Math.sin(ang) * 75 };
     const place = Math.sin(ang) < -0.8 ? "above" : "";
     pos[`${mid}.${a.name}`] = p;
     line(links, h, p, css("--jev"), .35);
@@ -127,12 +128,12 @@ function jevHub(h, n, router) {
   el("text", { x, y: y + 13, class: "node-sub", "text-anchor": anchor }, nodes, router || "router");
 }
 // Persistent JEV routing band: the last 3 relays, same on every panel.
-function drawBand(P, commsIn) {
-  const comms = (commsIn || []).slice(-3);
-  el("text", { x: P.x + 16, y: P.y + 80, class: "panel-sub" }, nodes, comms.length ? "JEV ROUTING — who relayed to whom" : "JEV · no messages yet").style.fill = css("--jev");
+function drawBand(P, commsIn, opt) {
+  const comms = (commsIn || []).slice(-3), x = (opt && opt.x) || P.x + 16, chars = (opt && opt.chars) || 58;
+  el("text", { x, y: P.y + 80, class: "panel-sub" }, nodes, clip(comms.length ? (opt && opt.team ? "JEV ROUTING" : "JEV ROUTING — who relayed to whom") : (opt && opt.team ? "no routes yet" : "JEV · no messages yet"), chars)).style.fill = css("--jev");
   comms.forEach((c, i) => {
     const dropped = c.to === "dropped" || c.decision === "drop";
-    el("text", { x: P.x + 16, y: P.y + 96 + i * 16, class: "task" }, nodes, clip(`${c.from} → ${dropped ? "✕ dropped" : c.to}: ${c.text}`, 58)).style.fill = dropped ? css("--dim") : css("--text");
+    el("text", { x, y: P.y + 96 + i * 16, class: "task" }, nodes, clip(`${c.from} → ${dropped ? "✕ dropped" : c.to}: ${c.text}`, chars)).style.fill = dropped ? css("--dim") : css("--text");
   });
 }
 
@@ -141,6 +142,23 @@ function statusColor(s) {
            running: css("--claude"), review: css("--done"), failed: css("--alert") }[s] || css("--dim");
 }
 
+// A machine's teams (state minis[id].teams); without them, one team made of the machine's agents and routes.
+function teamsOf(m) {
+  return (m.teams && m.teams.length) ? m.teams : [{ team: "", label: "studio", kind: "", idle: false, agents: m.agents || [], routes: m.comms || [] }];
+}
+// Teams drawn open (side by side) and teams folded to one line. One team is always drawn open; with several, idle ones fold.
+function shownTeams(m) {
+  const ts = teamsOf(m);
+  if (ts.length < 2) return { open: ts, folded: [] };
+  const open = ts.filter(t => !t.idle), folded = ts.filter(t => t.idle);
+  if (!open.length) open.push(folded.shift());
+  return { open, folded };
+}
+// The one line that stands for idle teams folded away: "<label>: idle (<n> agents)" and a count of the rest.
+function foldedText(folded) {
+  if (!folded.length) return "";
+  return `${folded[0].label}: idle (${folded[0].agents.length} agents)` + (folded.length > 1 ? ` +${folded.length - 1} more` : "");
+}
 // Compact when the Room is idle: the task list only takes room while something runs.
 function lapHeight() {
   const L = S.laptop || {}, proj = (L.projects || [])[0];
@@ -163,11 +181,17 @@ function layoutPanels() {
   const spareY = 30 + PANELS.lap.h + 18;
   SPARE.forEach((id, i) => { PANELS[id] = { x: 30, y: spareY + i * 184, w: 420, h: 166, title: LABELS[id].toUpperCase(), sub: "" }; });
   const n = STUDIOS.length, cols = n <= 2 ? 1 : n <= 6 ? 2 : 3, rows = Math.max(1, Math.ceil(n / cols));
+  // a machine with several open teams gets a wider panel (200 more per extra team); a column is as wide as its widest panel
+  const widthOf = id => { const k = shownTeams((S.minis || {})[id] || {}).open.length; return 420 + 200 * (k - 1); };
+  const colW = [];
+  STUDIOS.forEach((id, i) => { const c = Math.floor(i / rows); colW[c] = Math.max(colW[c] || 420, widthOf(id)); });
+  const colX = [750];
+  colW.forEach((w, c) => { colX[c + 1] = colX[c] + w + 30; });
   STUDIOS.forEach((id, i) => {
     const c = Math.floor(i / rows), r = i % rows;
-    PANELS[id] = { x: 750 + c * 450, y: 30 + r * 560, w: 420, h: 540, title: LABELS[id].toUpperCase(), sub: "Dev Studio · JEV" };
+    PANELS[id] = { x: colX[c], y: 30 + r * 560, w: widthOf(id), h: 540, title: LABELS[id].toUpperCase(), sub: "Dev Studio · JEV" };
   });
-  const W = 720 + Math.max(cols, 1) * 450;
+  const W = Math.max(colX[colW.length] - 30, 1170);
   const H = Math.max(800, 30 + rows * 560, spareY + SPARE.length * 184);
   $("stage").setAttribute("viewBox", `0 0 ${W} ${H}`);
   CLAUDE = { x: (450 + 750) / 2, y: H / 2 };
@@ -179,6 +203,7 @@ function render() {
   const links = $("links"), panels = $("panels"), nodes = $("nodes");
   links.innerHTML = panels.innerHTML = nodes.innerHTML = $("routes").innerHTML = "";
   pos = { claude: CLAUDE };
+  RT = [];   // route sources: one per cluster, {mid, jev, agents, comms}
   // panels
   for (const [id, p] of Object.entries(PANELS)) {
     const m = id === "lap" ? null : (S.minis[id] || {});
@@ -186,10 +211,11 @@ function render() {
     el("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: 14, fill: css("--panel"),
                  stroke: online ? css("--panel-edge") : css("--faint"), "stroke-dasharray": online ? "" : "6 6" }, panels);
     el("text", { x: p.x + 16, y: p.y + 26, class: "panel-title" }, panels, p.title);
-    if (m && m.online) {
+    if (m && m.online && shownTeams(m).open.length < 2) {
       const busy = (m.agents || []).some(a => a.status === "working" || a.status === "blocked");
       const btBusy = (m.room || []).some(t => t.status === "running");
-      const label = (busy ? "studio working" : "studio standing by") + (btBusy ? " · local model working" : "");
+      const label = (busy ? "studio working" : "studio standing by") + (btBusy ? " · local model working" : "")
+        + (shownTeams(m).folded.length ? " · " + foldedText(shownTeams(m).folded) : "");
       const t = el("text", { x: p.x + 16, y: p.y + 62, class: "panel-sub" }, panels, label);
       t.style.fill = busy || btBusy ? css("--claude") : css("--dim");
     }
@@ -214,6 +240,7 @@ function render() {
   drawTeam("lap", team0, lh);
   jevHub(lh, team0.length, "router");
   drawBand(lp, L.comms);
+  RT.push({ mid: "lap", jev: lh, agents: team0, comms: L.comms });
   const team = L.studio || [];
   el("text", { x: lp.x + 16, y: lp.y + 62, class: "panel-sub" }, panels, team.length ? "DEV STUDIO · this laptop" : "DEV STUDIO · not running")
     .style.fill = team.some(a => a.status === "working") ? css("--claude") : css("--dim");
@@ -260,11 +287,21 @@ function render() {
     const m = S.minis[mid] || {}, h = hub(mid);
     pos[mid] = h; pos[mid + ".jev"] = h;
     if (SPARE.includes(mid) && !m.online) continue;
-    drawTeam(mid, m.agents || [], h);
     if (m.online) {
-      const P = PANELS[mid];
-      jevHub(h, (m.agents || []).length, (m.jev && m.jev.router) || "router");
-      drawBand(P, m.comms);
+      const P = PANELS[mid], { open, folded } = shownTeams(m), k = open.length, cw = P.w / k;
+      open.forEach((t, i) => {
+        // each open team is its own cluster: hub, agent ring and routing band, side by side in the panel
+        const th = { x: P.x + cw * (i + .5), y: h.y }, x0 = P.x + cw * i + 16;
+        if (i > 0) el("line", { x1: P.x + cw * i, y1: P.y + 56, x2: P.x + cw * i, y2: P.y + 380, stroke: css("--faint"), "stroke-width": 1, "stroke-dasharray": "3 5", "stroke-opacity": .8 }, panels);   // divider between teams
+        drawTeam(mid, t.agents, th, Math.min(120, cw / 2 - 50));
+        jevHub(th, t.agents.length, k > 1 ? (t.kind || "router") : (m.jev && m.jev.router) || "router");
+        drawBand(P, t.routes, { x: x0, chars: Math.floor((cw - 24) / 7), team: k > 1 });
+        if (k > 1) el("text", { x: x0, y: P.y + 62, class: "panel-sub" }, nodes, clip(t.label, Math.floor((cw - 24) / 7)))
+          .style.fill = t.idle ? css("--dim") : css("--claude");
+        RT.push({ mid, jev: th, agents: t.agents, comms: t.routes });
+      });
+      // with several open teams the folded idle ones go on the right of the panel's second line
+      if (k > 1 && folded.length) el("text", { x: P.x + P.w - 16, y: P.y + 44, class: "panel-sub", "text-anchor": "end" }, nodes, clip(foldedText(folded), 36)).style.fill = css("--dim");
       if (m.mem) el("text", { x: P.x + P.w - 16, y: P.y + 26, class: "panel-sub", "text-anchor": "end" }, nodes, `memory free ${m.mem}`);
       // every other Claude / Codex session on this Mini
       const others = m.others || [];
@@ -310,11 +347,8 @@ function ago(t) {
 }
 function drawRoutes() {
   const g = $("routes");
-  for (const mid of ["lap", ...STUDIOS]) {
-    const comms = mid === "lap" ? (S.laptop || {}).comms : (S.minis[mid] || {}).comms;
+  for (const { mid, jev, agents, comms } of RT) {
     const c = (comms || []).slice(-1)[0];
-    const agents = (mid === "lap" ? (S.laptop || {}).studio : (S.minis[mid] || {}).agents) || [];
-    const jev = pos[mid + ".jev"];
     if (!c || !jev) continue;
     const at = r => { const a = agents.find(a => a.name === r || (a.name || "").endsWith("-" + r)); return a && pos[`${mid}.${a.name}`]; };
     const dropped = c.to === "dropped" || c.decision === "drop";

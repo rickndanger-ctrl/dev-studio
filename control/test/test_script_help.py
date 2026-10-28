@@ -17,7 +17,7 @@ HELP = {
     "publish-export": "Export tracked files as a one-commit repo, checking them against a privacy word list.",
     "barstat": "Read the Studio Routing server status and print JSON for the bar widget.",
     "re-audit": "audit Room tasks in the configured app and report progress, stalls, or loops to Claude",
-    "studio-snap.py": "snapshot every studio's agents, routes, and recent commits as JSON",
+    "studio-snap.py": "snapshot every studio's agents, routes, and recent commits as JSON, one snapshot per team",
 }
 BASH = {"dispatch", "ev", "onmini", "viewer", "publish-export"}
 
