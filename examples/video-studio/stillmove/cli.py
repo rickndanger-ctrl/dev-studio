@@ -54,6 +54,11 @@ def _print_fit_note(record):
         print(f"note: {record['note']}", file=sys.stderr)
 
 
+def _upscale_kwargs(args):
+    return {"upscale": args.upscale, "upscale_backend": args.upscale_backend,
+            "keep_colours": getattr(args, "keep_colours", True)}
+
+
 def _render_shape(args, cams, out, matte, center):
     """One shape of --sizes: a plain render, or an interpolated one with --smooth or --slowmo (its manifest
     gets an interp block, as for a single render)."""
@@ -65,9 +70,9 @@ def _render_shape(args, cams, out, matte, center):
         return interp.render_interpolated(args.image, cams, backend, out, factor, mode,
                                           interp_backend=args.interp_backend, mp4=args.mp4, matte=matte,
                                           fg_depth=args.fg_depth, fit_margin=_fit_margin(args),
-                                          aspect=args.aspect, center=center)
+                                          aspect=args.aspect, center=center, **_upscale_kwargs(args))
     return render(args.image, cams, backend, out, mp4=args.mp4, matte=matte, fg_depth=args.fg_depth,
-                  fit_margin=_fit_margin(args), aspect=args.aspect, center=center)
+                  fit_margin=_fit_margin(args), aspect=args.aspect, center=center, **_upscale_kwargs(args))
 
 
 def _render_sizes(args):
@@ -125,6 +130,12 @@ def _cmd_render(args):
     if args.sizes:
         return _render_sizes(args)
     width, height = _image_size(args.image)  # an unreadable image fails before any warning
+    if (args.width is None) != (args.height is None):
+        raise ValueError("give both --width and --height, or neither")
+    if args.width is not None:
+        if args.width < 1 or args.height < 1:
+            raise ValueError("--width and --height must be at least 1")
+        width, height = args.width, args.height  # the picture is cropped or padded to this frame
     if args.preset:
         preset = _catalog_preset(args.preset)
         warning = limits.check_preset(preset)
@@ -135,6 +146,9 @@ def _cmd_render(args):
         cams = cameras.from_preset(args.preset, args.seconds, args.fps, width, height)
     else:
         cams = cameras.load(args.cam)
+        # Without --width/--height a camera file keeps its own frame size.
+        if args.width is not None and (cams.width, cams.height) != (width, height):
+            cams = cameras.retarget(cams, width, height)
     if args.fg_depth is not None and not args.layers:
         raise ValueError("--fg-depth needs --layers")
     matte = None
@@ -149,11 +163,11 @@ def _cmd_render(args):
         manifest = interp.render_interpolated(args.image, cams, get_backend(args.backend), args.out, factor,
                                               mode, interp_backend=args.interp_backend, mp4=args.mp4,
                                               matte=matte, fg_depth=args.fg_depth, fit_margin=_fit_margin(args),
-                                              aspect=args.aspect)
+                                              aspect=args.aspect, **_upscale_kwargs(args))
     else:
         manifest = render(args.image, cams, get_backend(args.backend), args.out, mp4=args.mp4,
                           report=args.photo_report, matte=matte, fg_depth=args.fg_depth,
-                          fit_margin=_fit_margin(args), aspect=args.aspect)
+                          fit_margin=_fit_margin(args), aspect=args.aspect, **_upscale_kwargs(args))
     print(f"wrote {len(manifest['frames'])} frames to {args.out}")
     _print_fit_note(manifest["fit"])
     if manifest.get("note"):
@@ -163,10 +177,23 @@ def _cmd_render(args):
     return 0
 
 
+def _cmd_upscale(args):
+    from stillmove import upscale
+
+    manifest = upscale.upscale_path(args.src, args.scale, args.out, backend_name=args.backend, fps=args.fps,
+                                    mp4=not args.no_mp4, keep_colours=args.keep_colours)
+    if manifest["kind"] == "frames":
+        print(f"wrote {len(manifest['frames'])} frames to {args.out}")
+    else:
+        print(f"wrote {args.out}/upscaled.png ({manifest['output'][0]}x{manifest['output'][1]})")
+    return 0
+
+
 def _cmd_interp(args):
     from stillmove import interp
 
-    manifest = interp.interp_folder(args.frames, args.factor, args.out, backend_name=args.backend, fps=args.fps)
+    manifest = interp.interp_folder(args.frames, args.factor, args.out, backend_name=args.backend, fps=args.fps,
+                                    mp4=not args.no_mp4)
     print(f"wrote {len(manifest['frames'])} frames to {args.out}")
     return 0
 
@@ -255,6 +282,10 @@ def _build_parser():
     p_render.add_argument("--preset", metavar="ID", help="camera-motion preset id")
     p_render.add_argument("--cam", metavar="FILE", help="camera file (camera-motion export, json)")
     p_render.add_argument("--seconds", type=float, default=3.0)
+    p_render.add_argument("--width", type=int, default=None,
+                          help="output width in pixels (give with --height; default: the picture's size)")
+    p_render.add_argument("--height", type=int, default=None,
+                          help="output height in pixels (give with --width; default: the picture's size)")
     p_render.add_argument("--fps", type=int, default=24)
     p_render.add_argument("--backend", default="plane", help="depth backend: plane, gradient (fakes) or da2-small (Depth Anything V2 Small, needs onnxruntime)")
     p_render.add_argument("--mp4", action="store_true", help="also write preview.mp4 if ffmpeg is on PATH")
@@ -262,6 +293,12 @@ def _build_parser():
                           help="render at fps / N, then interpolate N times: the same duration, smoother motion")
     p_render.add_argument("--slowmo", type=int, choices=(2, 4), metavar="N",
                           help="render at fps, then interpolate N times: the same fps, so it plays N times longer")
+    p_render.add_argument("--upscale", type=int, choices=(2, 4), metavar="N",
+                          help="enlarge the picture N times before the move (the frames are N times bigger)")
+    p_render.add_argument("--upscale-backend", default="lanczos", choices=("lanczos", "esrgan"),
+                          help="upscaler for --upscale: lanczos (no model) or esrgan (needs its model)")
+    p_render.add_argument("--no-keep-colours", dest="keep_colours", action="store_false",
+                          help="with esrgan, take the colour from the learned picture (default: keep the source's colour)")
     p_render.add_argument("--interp-backend", default="linear", choices=("linear", "rife"),
                           help="frame interpolation for --smooth and --slowmo: linear (a blend) or rife (midpoint model, 2x and 4x)")
     p_render.add_argument("--aspect", choices=("crop", "pad"), default="crop",
@@ -316,6 +353,18 @@ def _build_parser():
     p_matte.add_argument("-o", "--out", required=True, metavar="MASK.PNG", help="output mask file")
     p_matte.set_defaults(handler=_cmd_matte)
 
+    p_upscale = sub.add_parser("upscale", help="enlarge a picture, or a folder of frames, 2x or 4x")
+    p_upscale.add_argument("src", metavar="IMAGE_OR_FRAMES_DIR", help="a picture, or a folder of NNNN.png frames")
+    p_upscale.add_argument("--scale", type=int, choices=(2, 4), default=2, help="enlargement (default 2)")
+    p_upscale.add_argument("--backend", default="lanczos", choices=("lanczos", "esrgan"),
+                           help="lanczos (no model) or esrgan (needs its model)")
+    p_upscale.add_argument("--no-keep-colours", dest="keep_colours", action="store_false",
+                           help="with esrgan, take the colour from the learned picture (default: keep the source's colour)")
+    p_upscale.add_argument("--fps", type=int, default=24, help="fps for the frames' preview.mp4 (default 24)")
+    p_upscale.add_argument("--no-mp4", action="store_true",
+                           help="do not write preview.mp4 for a folder (it is written whenever ffmpeg is on PATH)")
+    p_upscale.add_argument("-o", "--out", required=True, metavar="OUTDIR", help="output folder")
+    p_upscale.set_defaults(handler=_cmd_upscale)
     p_interp = sub.add_parser("interp", help="interpolate a folder of frames: more in-between frames")
     p_interp.add_argument("frames", metavar="FRAMES_DIR", help="folder of NNNN.png frames, in order")
     p_interp.add_argument("--factor", type=int, choices=(2, 4), default=2,
@@ -323,6 +372,8 @@ def _build_parser():
     p_interp.add_argument("--backend", default="linear", choices=("linear", "rife"),
                           help="linear (a blend, no model) or rife (midpoint model, 2x and 4x)")
     p_interp.add_argument("--fps", type=int, default=24, help="fps written to the preview and manifest (default 24)")
+    p_interp.add_argument("--no-mp4", action="store_true",
+                          help="do not write preview.mp4 (it is written whenever ffmpeg is on PATH)")
     p_interp.add_argument("-o", "--out", required=True, metavar="OUTDIR", help="output folder")
     p_interp.set_defaults(handler=_cmd_interp)
     p_presets = sub.add_parser("presets", help="list camera-motion presets")

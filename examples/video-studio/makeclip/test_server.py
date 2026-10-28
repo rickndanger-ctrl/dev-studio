@@ -8,12 +8,14 @@ import math
 import os
 import shutil
 import socket
+import struct
 import sys
 import tempfile
 import threading
 import time
 import unittest
 import urllib.parse
+import zlib
 
 from makeclip import server as clipserver
 
@@ -82,6 +84,14 @@ class Client:
         raise AssertionError("render did not finish in %s s" % timeout)
 
 
+def png_of_size(width, height):
+    """A PNG with a real header of this size (the server reads only the header)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    return clipserver.PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IEND", b"")
+
+
 def good_render(**over):
     body = {"image": "still.png", "preset": "dolly_in", "amount": 0.4, "seconds": 2, "size": "square",
             "layers": False, "depth": "simple"}
@@ -109,13 +119,16 @@ class ServerCase(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.client = Client(self.port)
         # The tests never depend on what models are installed here.
-        self._saved = (clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL)
+        self._saved = (clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL,
+                       clipserver.ESRGAN_MODEL)
         clipserver.ISNET_MODEL = os.path.join(self.root, "no-isnet.onnx")
         clipserver.DEPTH_MODEL = os.path.join(self.root, "no-depth.onnx")
         clipserver.RIFE_MODEL = os.path.join(self.root, "no-rife.onnx")
+        clipserver.ESRGAN_MODEL = os.path.join(self.root, "no-esrgan.onnx")
 
     def tearDown(self):
-        clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL = self._saved
+        (clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL,
+         clipserver.ESRGAN_MODEL) = self._saved
         self.httpd.shutdown()
         self.httpd.server_close()
         shutil.rmtree(self.root, ignore_errors=True)
@@ -421,6 +434,121 @@ class RenderTests(ServerCase):
         self.assertNotIn("--interp-backend", command)
         self.assertIsNone(meta["interp"])
         self.assertIsNone(done["smooth"])
+
+    # --- Enhance small pictures --------------------------------------------------------
+
+    def enhance_render(self, picture, **over):
+        """Render with Enhance on a picture of this size; return (command, final status, clip.json)."""
+        commands = []
+
+        def capture(command, env, clip_dir, expected):
+            commands.append(command)
+            return fake_renderer()(command, env, clip_dir, expected)
+
+        self.studio.renderer = capture
+        self.add_input("small.png", png_of_size(*picture))
+        body = good_render(image="small.png", **dict({"enhance": True}, **over))
+        self.assertEqual(self.client.post("/api/render", body)[0], 202)
+        done = self.client.wait_done()
+        with open(os.path.join(self.outputs, done["clip"], "clip.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        return commands[-1], done, meta
+
+    def test_enhance_picks_the_smallest_factor_that_reaches_the_output(self):
+        cases = [((540, 540), "square", "crop", 2), ((270, 270), "square", "crop", 4),
+                 ((100, 100), "square", "crop", 4),            # never more than 4
+                 ((1000, 1000), "wide", "crop", 2),            # 1920 / 1000
+                 ((1080, 1080), "square", "crop", None),       # already big enough
+                 ((2000, 2000), "wide", "crop", None),
+                 ((540, 540), "every", "crop", 4),             # vertical needs 1920 / 540
+                 ((1000, 1000), "wide", "pad", 2)]             # pad: min(1.92, 1.08) = 1.08
+        for picture, size, aspect, expected in cases:
+            with self.subTest(picture=picture, size=size, aspect=aspect):
+                names = list(clipserver.stillmove_sizes.SIZES) if size == "every" else [size]
+                outs = [clipserver.stillmove_sizes.SIZES[n] for n in names]
+                self.assertEqual(clipserver.upscale_factor(picture, outs, aspect), expected)
+
+    def test_enhance_small_picture_runs_lanczos_without_the_model(self):
+        command, done, meta = self.enhance_render((540, 540))
+        self.assertEqual(command[command.index("--upscale") + 1], "2")
+        self.assertEqual(command[command.index("--upscale-backend") + 1], "lanczos")
+        self.assertEqual(meta["upscale"], {"factor": 2, "method": "lanczos"})
+        self.assertEqual(done["upscale"], {"factor": 2, "method": "lanczos"})
+
+    def test_enhance_uses_esrgan_when_its_model_and_onnxruntime_are_there(self):
+        with open(clipserver.ESRGAN_MODEL, "wb") as f:
+            f.write(b"model")
+        self.studio._onnx = True
+        command, done, meta = self.enhance_render((270, 270))
+        self.assertEqual(command[command.index("--upscale") + 1], "4")
+        self.assertEqual(command[command.index("--upscale-backend") + 1], "esrgan")
+        self.assertEqual(done["upscale"], {"factor": 4, "method": "esrgan"})
+
+    def test_enhance_uses_lanczos_when_the_model_is_there_but_onnxruntime_is_not(self):
+        with open(clipserver.ESRGAN_MODEL, "wb") as f:
+            f.write(b"model")
+        self.studio._onnx = False
+        command, done, _ = self.enhance_render((540, 540))
+        self.assertEqual(command[command.index("--upscale-backend") + 1], "lanczos")
+
+    def test_enhance_does_nothing_for_a_big_picture_or_when_off(self):
+        for picture, over in (((2000, 2000), {}), ((540, 540), {"enhance": False})):
+            with self.subTest(picture=picture, over=over):
+                command, done, meta = self.enhance_render(picture, **over)
+                self.assertNotIn("--upscale", command)
+                self.assertNotIn("--upscale-backend", command)
+                self.assertIsNone(meta["upscale"])
+                self.assertIsNone(done["upscale"])
+
+    def test_enhance_must_be_a_boolean(self):
+        self.add_input()
+        for value in ("yes", 1, None):
+            with self.subTest(value=value):
+                self.assertEqual(self.client.post("/api/render", good_render(enhance=value))[0], 400)
+
+    def test_images_list_the_picture_size(self):
+        self.add_input("small.png", png_of_size(321, 123))
+        self.add_input("odd.png", b"not a picture")
+        rows = {row["name"]: row for row in self.client.get("/api/images")[1]}
+        self.assertEqual((rows["small.png"]["width"], rows["small.png"]["height"]), (321, 123))
+        self.assertIsNone(rows["odd.png"]["width"])
+
+    def test_the_header_reader_handles_png_and_jpeg(self):
+        import io
+        from PIL import Image
+
+        path = os.path.join(self.root, "a.png")
+        with open(path, "wb") as f:
+            f.write(png_of_size(640, 480))
+        self.assertEqual(clipserver.image_size(path), (640, 480))
+        for progressive in (False, True):
+            out = io.BytesIO()
+            Image.new("RGB", (300, 200)).save(out, "JPEG", progressive=progressive)
+            jpg = os.path.join(self.root, "a%d.jpg" % progressive)
+            with open(jpg, "wb") as f:
+                f.write(out.getvalue())
+            self.assertEqual(clipserver.image_size(jpg), (300, 200))
+
+    def test_the_chosen_size_is_passed_to_the_render_as_width_and_height(self):
+        commands = []
+
+        def capture(command, env, clip_dir, expected):
+            commands.append(command)
+            return fake_renderer()(command, env, clip_dir, expected)
+
+        self.studio.renderer = capture
+        self.add_input()
+        for size, (width, height) in clipserver.stillmove_sizes.SIZES.items():
+            with self.subTest(size=size):
+                self.assertEqual(self.client.post("/api/render", good_render(size=size))[0], 202)
+                self.client.wait_done()
+                command = commands[-1]
+                self.assertEqual(command[command.index("--width") + 1], str(width))
+                self.assertEqual(command[command.index("--height") + 1], str(height))
+        self.assertEqual(self.client.post("/api/render", good_render(size="every"))[0], 202)
+        self.client.wait_done()
+        self.assertIn("--sizes", commands[-1])
+        self.assertNotIn("--width", commands[-1])  # Every size sets each shape itself
 
     def test_smooth_4x_is_passed_to_the_render(self):
         commands = []

@@ -116,8 +116,11 @@ def _write_manifest(outdir, manifest):
         handle.write("\n")
 
 
-def interp_folder(frames_dir, factor, outdir, backend_name="linear", fps=24):
-    """stillmove interp: read frames_dir, write the interpolated frames, a preview and a manifest."""
+def interp_folder(frames_dir, factor, outdir, backend_name="linear", fps=24, mp4=True):
+    """stillmove interp: read frames_dir, write the interpolated frames, a preview and a manifest.
+
+    By default it also writes preview.mp4 whenever ffmpeg is on PATH (mp4=False skips it). Without ffmpeg
+    there is no error: mp4 is null and the manifest's note says why."""
     backend = get_interp(backend_name)
     started = time.perf_counter()
     frames = read_frames(frames_dir)
@@ -125,14 +128,23 @@ def interp_folder(frames_dir, factor, outdir, backend_name="linear", fps=24):
     names = write_frames(out, outdir)
     write_preview(outdir, names, fps)
     seconds = time.perf_counter() - started
+    mp4_path, note = None, None
+    if mp4:
+        if shutil.which("ffmpeg"):
+            mp4_path = _encode_mp4(outdir, fps)
+        else:
+            note = "ffmpeg not found on PATH; mp4 skipped"
     manifest = {
         "frames": names,
         "preview": PREVIEW,
+        "mp4": mp4_path,
         "fps": fps,
         "interp": {"factor": factor, "mode": "interp", "backend": backend.name,
                    "input_frames": len(frames), "output_frames": len(out),
                    "timing": {"interp_s": seconds}},
     }
+    if note:
+        manifest["note"] = note
     _write_manifest(outdir, manifest)
     return manifest
 

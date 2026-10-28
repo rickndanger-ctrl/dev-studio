@@ -30,10 +30,10 @@ stay strictly inside one of the two roots.
 |---|---|
 | `GET /` | the page |
 | `GET /api/options` | `{presets: [{id, name, param, unit, min, max, default, help}], durations: {min:2, max:8, default:4}, sizes: [{id:"square", w:1080, h:1080}, {id:"wide", w:1920, h:1080}, {id:"vertical", w:1080, h:1920}], depth: {simple: true, real: <model file present>}, layers: <isnet model present and onnxruntime importable by the render python>}` |
-| `GET /api/images` | input pictures, newest first: `[{name, url}]` |
+| `GET /api/images` | input pictures, newest first: `[{name, url, width, height}]` (width and height are null when the file's header cannot be read) |
 | `GET /inputs/<name>` | one input picture (thumbnail use) |
-| `POST /api/upload?name=` | `{name, url}` of the saved picture |
-| `POST /api/render` | body `{image, preset, amount, seconds, size, layers, depth, smooth}` (`smooth`: 0 or absent for off, 2 or 4, also with Every size; refused when seconds times 24 fps is not a multiple of it) → 202 `{job}` (with `smooth` on, the render uses `--interp-backend rife` when the RIFE model file and onnxruntime are present in the render python, else `linear`; `GET /api/render/status` then has `smooth: {factor, backend}` and `clip.json` has `interp`); 409 while one runs; 400 with a plain message for any value out of range |
+| `POST /api/upload?name=` | `{name, url, width, height}` of the saved picture |
+| `POST /api/render` | body `{image, preset, amount, seconds, size, layers, depth, smooth, enhance}` (`smooth`: 0 or absent for off, 2 or 4, also with Every size; refused when seconds times 24 fps is not a multiple of it) → 202 `{job}` (with `enhance` true and a picture smaller than the output, the render gets `--upscale 2|4` (the smallest that reaches the output size, at most 4) and `--upscale-backend esrgan` when `~/models/realesrgan/realesr-general-x4v3.onnx` and onnxruntime are present in the render python, else `lanczos`; status has `upscale: {factor, method}` and `clip.json` has `upscale`); (with `smooth` on, the render uses `--interp-backend rife` when the RIFE model file and onnxruntime are present in the render python, else `linear`; `GET /api/render/status` then has `smooth: {factor, backend}` and `clip.json` has `interp`); 409 while one runs; 400 with a plain message for any value out of range |
 | `GET /api/render/status` | `{state: idle|running|done|error, frame, frames, message, clip}` |
 | `GET /api/clips` | recent clips, newest first, at most 20: `[{name, made, seconds, size, preset, mp4, gif}]` |
 | `GET /clips/<dir>/preview.mp4` and `/preview.gif` | the file; `?download=1` adds `Content-Disposition: attachment` |

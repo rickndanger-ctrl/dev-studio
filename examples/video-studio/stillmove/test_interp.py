@@ -1,10 +1,12 @@
 """Frame interpolation: frame counts, in-betweens, the folder command and the smooth and slowmo renders."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -71,6 +73,79 @@ class InterpFolderTests(unittest.TestCase):
         self.assertGreaterEqual(info["timing"]["interp_s"], 0)
         with open(os.path.join(out, "manifest.json"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["interp"]["factor"], 2)
+
+
+class InterpMp4Tests(unittest.TestCase):
+    """stillmove interp --mp4: preview.mp4 when ffmpeg is on PATH, else a note in the manifest."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.frames = os.path.join(self.dir, "frames")
+        os.makedirs(self.frames)
+        for i in range(3):
+            Image.fromarray(flat(i * 90, height=16, width=16)).save(os.path.join(self.frames, "%04d.png" % i))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is not installed")
+    def test_mp4_is_recorded_when_ffmpeg_is_present(self):
+        out = os.path.join(self.dir, "with-ffmpeg")
+        manifest = interp_folder(self.frames, 2, out, mp4=True)
+        self.assertEqual(manifest["mp4"], "preview.mp4")  # relative to the folder, as render records it
+        self.assertTrue(os.path.isfile(os.path.join(out, manifest["mp4"])))
+        self.assertNotIn("note", manifest)
+
+    def test_a_note_is_recorded_when_ffmpeg_is_missing(self):
+        out = os.path.join(self.dir, "no-ffmpeg")
+        empty_bin = os.path.join(self.dir, "empty-bin")
+        os.makedirs(empty_bin)
+        with mock.patch.dict(os.environ, {"PATH": empty_bin}):
+            manifest = interp_folder(self.frames, 2, out, mp4=True)
+        self.assertIsNone(manifest["mp4"])
+        self.assertEqual(manifest["note"], "ffmpeg not found on PATH; mp4 skipped")
+        self.assertFalse(os.path.exists(os.path.join(out, "preview.mp4")))
+
+    def test_no_mp4_skips_the_file_and_the_note(self):
+        out = os.path.join(self.dir, "plain")
+        manifest = interp_folder(self.frames, 2, out, mp4=False)
+        self.assertIsNone(manifest["mp4"])
+        self.assertNotIn("note", manifest)
+        self.assertFalse(os.path.exists(os.path.join(out, "preview.mp4")))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is not installed")
+    def test_mp4_is_written_by_default_when_ffmpeg_is_present(self):
+        out = os.path.join(self.dir, "default")
+        manifest = interp_folder(self.frames, 2, out)
+        self.assertEqual(manifest["mp4"], "preview.mp4")
+        self.assertTrue(os.path.isfile(os.path.join(out, "preview.mp4")))
+
+    def test_default_without_ffmpeg_is_not_an_error(self):
+        out = os.path.join(self.dir, "default-no-ffmpeg")
+        empty_bin = os.path.join(self.dir, "bin-empty")
+        os.makedirs(empty_bin)
+        with mock.patch.dict(os.environ, {"PATH": empty_bin}):
+            manifest = interp_folder(self.frames, 2, out)
+        self.assertIsNone(manifest["mp4"])
+        self.assertEqual(manifest["note"], "ffmpeg not found on PATH; mp4 skipped")
+        self.assertEqual(len(manifest["frames"]), 5)
+
+    def test_cli_without_ffmpeg_exits_zero_with_no_stderr(self):
+        empty_bin = os.path.join(self.dir, "bin-cli")
+        os.makedirs(empty_bin)
+        out = os.path.join(self.dir, "cli-out")
+        env = dict(os.environ, PATH=empty_bin)
+        done = subprocess.run([sys.executable, "-m", "stillmove.cli", "interp", self.frames, "--factor", "2",
+                               "--backend", "linear", "-o", out], cwd=ROOT, capture_output=True, text=True, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stderr, "")
+        with open(os.path.join(out, "manifest.json"), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["note"], "ffmpeg not found on PATH; mp4 skipped")
+
+    def test_cli_no_mp4_flag_skips_the_file(self):
+        out = os.path.join(self.dir, "cli-no-mp4")
+        done = subprocess.run([sys.executable, "-m", "stillmove.cli", "interp", self.frames, "--factor", "2",
+                               "--backend", "linear", "--no-mp4", "-o", out],
+                              cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse(os.path.exists(os.path.join(out, "preview.mp4")))
 
 
 class RenderModeTests(unittest.TestCase):

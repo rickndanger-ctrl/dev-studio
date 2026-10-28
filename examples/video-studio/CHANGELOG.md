@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- `stillmove upscale IMAGE_OR_FRAMES_DIR --scale 2|4 -o OUTDIR`: enlarges a picture, or a folder of frames
+  (with `preview.mp4` when ffmpeg is on PATH; `--no-mp4` skips it). `--backend lanczos|esrgan` picks the
+  method.
+- `stillmove render --upscale 2|4` enlarges the picture before the move, so the frames are sharper; the
+  output size does not change, and the manifest records the upscale. `--upscale-backend lanczos|esrgan`
+  picks the method.
+- `stillmove render --width W --height H` sets the output frame size (give both or neither). The picture is
+  cropped or padded to the frame, and a camera file is retargeted to it. The default is the picture's size.
+- The `esrgan` upscale backend: Real-ESRGAN (general x4 v3) run with onnxruntime in 256 px tiles with a 16 px
+  overlap, the model file checked against its SHA256 (see `MODELS.md`; `stillmove doctor` has a line for it).
+  Without the model, `esrgan` says so, and `lanczos` (a plain resize) needs none.
+- Keep colours, on by default for `esrgan`: the model supplies the luminance detail and Lanczos supplies the
+  colour, so enlarged pictures keep the source's colours. `--no-keep-colours` takes the colour from the model.
+- Make a clip has "Enhance small pictures". It starts on when the chosen picture is smaller than the output
+  and you can turn it off. It enlarges 2x or 4x (the smallest that reaches the output, at most 4x), with
+  Real-ESRGAN when its model and onnxruntime are present and Lanczos otherwise. The page shows which one
+  was used, and `clip.json` records it. `/api/images` and the upload reply now give each picture's width and
+  height.
+- `stillmove interp` writes `preview.mp4` whenever ffmpeg is on PATH; `--no-mp4` skips it. Without ffmpeg it
+  is not an error: the manifest's note says so.
+- Checked on real pictures: TO BE FILLED (numbers from the real check).
+
+### Fixed
+
+- Make a clip now passes the chosen size (square, wide or vertical) to the render. Since `--cam` renders
+  followed the picture's size, a clip came out at the picture's size (a 320 px picture gave 320x180) instead
+  of 1080x1080.
+
 ## 0.3.0
 
 ### Added

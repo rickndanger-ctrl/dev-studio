@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-studio"
-version = "0.3.0"
+version = "0.4.0"
 description = "Stillmove: move a still image along a camera-motion path. Shotplan: plan shots and join them into one timeline."
 requires-python = ">=3.9"
 license = {text = "MIT"}

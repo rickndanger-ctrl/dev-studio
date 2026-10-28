@@ -8,6 +8,7 @@ revision and SHA256. The code never downloads a model at run time.
 | Depth Anything V2 Small (ONNX, fp32) | `stillmove render --backend da2-small`, `stillmove mesh --depth da2-small` | `onnx/model.onnx` | Apache-2.0 | 99,060,839 bytes | CPU (onnxruntime) |
 | IS-Net general use (ONNX) | `stillmove matte --backend isnet`, `--matte isnet` | `isnet-general-use.onnx` | MIT (rembg packaging), Apache-2.0 (weights) | 178,648,008 bytes | CPU (onnxruntime) |
 | RIFE midpoint (ONNX, from hzwer/arXiv2020-RIFE weights) | `stillmove interp --backend rife`, `stillmove render --interp-backend rife` | `rife_ifnet_midpoint.onnx` | MIT (code and weights, per the repo's LICENSE and README) | 40,443,991 bytes | CPU (onnxruntime) |
+| Real-ESRGAN general x4 v3 (ONNX, SRVGG compact; for upscaling) | `stillmove` esrgan upscale backend (VS-16, not yet built) | `realesr-general-x4v3.onnx` | BSD-3-Clause via the repo LICENSE; the release has no file-level statement | 4,866,418 bytes (ONNX), 4,885,111 bytes (pth) | CPU (onnxruntime), tiled |
 
 The `fake` depth and `fake` matte need neither model, so the tests run without them. The doctor
 reports each model as WARN when it is absent and FAIL when its SHA256 does not match.
@@ -119,3 +120,51 @@ SOFTWARE.
 
 The weights came from the "RIFE model" link in the arXiv2020-RIFE README, not from a model hub. The
 Practical-RIFE README says its trained-model links are under MIT too; those weights are not used here.
+
+## Real-ESRGAN general x4 v3 (ONNX, SRVGG compact)
+
+| Field | Value |
+|---|---|
+| Code | xinntao/Real-ESRGAN, tag v0.2.5.0, commit 685d429c81888252bdb10f56c7754baededc3823, `realesrgan/archs/srvgg_arch.py` (SRVGGNetCompact) |
+| Weights URL | https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth (release v0.2.5.0, asset realesr-general-x4v3.pth, GitHub size 4,885,111 bytes) |
+| License | **BSD-3-Clause via the repo LICENSE; the release has no file-level statement.** The release notes and README say nothing about a separate license for this file. |
+| Local pth | ~/models/realesrgan/src/realesr-general-x4v3.pth, 4,885,111 bytes, SHA256 8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292 (downloaded 2026-10-28, once) |
+| ONNX export | ~/models/realesrgan/realesr-general-x4v3.onnx, 4,866,418 bytes, SHA256 a93b2f013c19bc043e975915ffa4d8dc9ed8270ec9fbc87dcec21bce42db4d61, opset 17, dynamic height and width. Input `image` (1, 3, H, W) float32 0..1 RGB; output `upscaled` (1, 3, 4H, 4W) float32. |
+| Architecture | 32 body convolutions (num_feat 64, PReLU, upscale 4), 1,213,296 parameters. The checkpoint loads strictly only with 32; the repo's inference script at v0.2.5.0 builds 16 and would not load this file. |
+| Verification (ONNX vs torch, 0-1 scale) | owner logo, 512x512 crop: max 5.8e-6 (0.0015 of 255); generated 320x200 gradient with disc: max 6.5e-5 (0.017 of 255) |
+
+Only the x4 general model is installed. The x4plus model is not downloaded (VS-16 skips quality mode).
+
+The LICENSE text of the repo at v0.2.5.0, copied as downloaded:
+
+```
+BSD 3-Clause License
+
+Copyright (c) 2021, Xintao Wang
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

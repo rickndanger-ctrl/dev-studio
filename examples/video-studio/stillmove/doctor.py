@@ -137,6 +137,20 @@ def _check_depth_model():
     return "PASS", "depth model SHA256 matches"
 
 
+def _check_esrgan_model():
+    """Real-ESRGAN x4 model: present and SHA256 matches MODELS.md. Missing is a WARN: only the esrgan upscale needs it."""
+    from stillmove import models
+    from stillmove.backends.esrgan import DEFAULT_MODEL, MODEL_SHA256
+
+    if not os.path.isfile(DEFAULT_MODEL):
+        return "WARN", f"esrgan model not found at {DEFAULT_MODEL}; the esrgan upscale is off"
+    try:
+        models.verify(DEFAULT_MODEL, MODEL_SHA256)
+    except ValueError as exc:
+        return "FAIL", str(exc)
+    return "PASS", "esrgan model SHA256 matches"
+
+
 def _check_rife_model():
     """RIFE midpoint model: present and SHA256 matches MODELS.md. Missing is a WARN: only --interp-backend rife needs it."""
     from stillmove import models
@@ -184,6 +198,7 @@ CHECKS = (
     ("onnxruntime", _check_onnxruntime),
     ("matte model", _check_matte_model),
     ("rife model", _check_rife_model),
+    ("esrgan model", _check_esrgan_model),
     ("shotplan import", _check_shotplan_import),
     ("shotplan web import", _check_shotplan_web_import),
     ("shotplan fake render", _check_shotplan_render),

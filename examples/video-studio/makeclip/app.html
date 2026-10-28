@@ -106,6 +106,10 @@ ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
         <span id="layers-note" class="muted"></span>
       </div>
       <div class="field">
+        <label><input id="enhance" type="checkbox"> Enhance small pictures</label>
+        <span id="enhance-note" class="muted"></span>
+      </div>
+      <div class="field">
         <label for="smooth">Smooth motion</label>
         <select id="smooth">
           <option value="0">Off</option>
@@ -143,6 +147,7 @@ ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
       <video id="video" controls hidden></video>
       <p id="fit-note" class="muted" hidden></p>
       <p id="smooth-result" class="muted" hidden></p>
+      <p id="upscale-result" class="muted" hidden></p>
       <div id="downloads" class="row" hidden style="margin-top: 12px;">
         <a id="dl-mp4" class="button" href="#">Download MP4</a>
         <a id="dl-gif" class="button" href="#">Download GIF</a>
@@ -368,6 +373,8 @@ async function loadOptions() {
   every.value = "every";
   every.textContent = "Every size (square, wide and vertical)";
   $("size").appendChild(every);
+  $("size").addEventListener("change", syncEnhance);
+  $("aspect").addEventListener("change", syncEnhance);
   fillSizes("promo-size");
   fillOptions();
   $("render").disabled = false;
@@ -402,6 +409,7 @@ function showThumb() {
   }
   thumb.src = "inputs/" + encodeURIComponent(name);
   thumb.hidden = false;
+  syncEnhance();
 }
 
 async function loadImages(selectName) {
@@ -462,6 +470,35 @@ function showSmoothResult(smooth) {
     ? "Smooth " + smooth.factor + "x, " + (smooth.backend === "rife" ? "RIFE model" : "linear blend") + "."
     : "";
   $("smooth-result").hidden = !on;
+}
+
+// How a small picture was enlarged: the Real-ESRGAN model when it is installed, else a plain resize.
+function showUpscaleResult(upscale) {
+  const on = !!(upscale && upscale.factor);
+  $("upscale-result").textContent = on
+    ? "Enhanced " + upscale.factor + "x with " + (upscale.method === "esrgan" ? "Real-ESRGAN" : "a plain resize (Lanczos)") + "."
+    : "";
+  $("upscale-result").hidden = !on;
+}
+
+// Mirrors the server's rule: the smallest of 2x or 4x that makes the picture reach the output size.
+function enhanceFactor(image, sizeId, aspect) {
+  if (!image || !image.width || !image.height || !state.options) return 0;
+  const sizes = sizeId === "every" ? state.options.sizes : state.options.sizes.filter((s) => s.id === sizeId);
+  if (!sizes.length) return 0;
+  const pick = aspect === "pad" ? Math.min : Math.max;
+  const need = Math.max(...sizes.map((s) => pick(s.w / image.width, s.h / image.height)));
+  return need <= 1 ? 0 : (need <= 2 ? 2 : 4);
+}
+
+// The toggle starts on when the chosen picture is smaller than the output; the user can turn it off.
+function syncEnhance() {
+  const image = state.images.find((i) => i.name === $("images").value);
+  const factor = enhanceFactor(image, $("size").value, $("aspect").value);
+  $("enhance").checked = factor > 0;
+  $("enhance-note").textContent = factor > 0
+    ? "This picture is smaller than the output, so it will be enlarged " + factor + "x first."
+    : "";
 }
 
 function showEvery(clip, files, zip, notes) {
@@ -577,6 +614,7 @@ async function checkStatus() {
       if (status.files) showEvery(status.clip, status.files, status.zip, status.notes);
       else showClip(status.clip, status.notes);
       showSmoothResult(status.smooth);
+      showUpscaleResult(status.upscale);
       say("Your clip is ready.", "ok");
     }
     loadClips();
@@ -616,6 +654,7 @@ async function makeClip() {
     size: $("size").value,
     layers: $("layers").checked,
     smooth: Number($("smooth").value),
+    enhance: $("enhance").checked,
     aspect: $("aspect").value,
     depth: $("depth-real").checked ? "real" : "simple",
   };
@@ -624,6 +663,7 @@ async function makeClip() {
   $("every").hidden = true;
   $("fit-note").hidden = true;
   $("smooth-result").hidden = true;
+  $("upscale-result").hidden = true;
   $("downloads").hidden = true;
   say("Starting…", "muted");
   try {

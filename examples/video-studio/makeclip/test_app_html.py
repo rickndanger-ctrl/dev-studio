@@ -134,6 +134,18 @@ class PageTests(unittest.TestCase):
         self.assertIn('smooth.backend === "rife" ? "RIFE model" : "linear blend"', text)
         self.assertIn('$("smooth-result").hidden = true;', text)
 
+    def test_enhance_toggle_starts_on_for_a_small_picture_and_names_the_method(self):
+        ids = parse().ids
+        for name in ("enhance", "enhance-note", "upscale-result"):
+            self.assertIn(name, ids)
+        text = script_text()
+        self.assertIn("enhance: $(\"enhance\").checked", text)
+        self.assertIn("function enhanceFactor(image, sizeId, aspect)", text)
+        self.assertIn('$("enhance").checked = factor > 0;', text)
+        self.assertIn("showUpscaleResult(status.upscale);", text)
+        self.assertIn('upscale.method === "esrgan" ? "Real-ESRGAN"', text)
+        self.assertIn('$("upscale-result").hidden = true;', text)
+
     def test_recent_clips_use_the_friendly_date_formatter(self):
         text = script_text()
         self.assertIn("function formatMade(iso, now)", text)

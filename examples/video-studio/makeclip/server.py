@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import socketserver
+import struct
 import subprocess
 import sys
 import threading
@@ -56,6 +57,7 @@ CLIP_LIMIT = 20
 ISNET_MODEL = os.path.join(os.path.expanduser("~"), "models", "isnet-general-use", "isnet-general-use.onnx")
 DEPTH_MODEL = os.path.join(os.path.expanduser("~"), "models", "depth-anything-v2-small", "model.onnx")
 RIFE_MODEL = os.path.join(os.path.expanduser("~"), "models", "rife", "rife_ifnet_midpoint.onnx")
+ESRGAN_MODEL = os.path.join(os.path.expanduser("~"), "models", "realesrgan", "realesr-general-x4v3.onnx")
 # "every" renders each of these into its own folder (stillmove render --sizes), plus sizes.zip.
 EVERY = "every"
 EVERY_SIZES = ("square", "wide", "vertical")
@@ -122,6 +124,51 @@ def fit_notes(clip_dir):
     else:  # a clip: one record for the whole move
         records = [manifest.get("fit")]
     return [record["note"] for record in records if isinstance(record, dict) and record.get("note")]
+
+
+def image_size(path):
+    """(width, height) of a PNG or JPEG file from its header, or None when it cannot be read. Stdlib only."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if head.startswith(PNG_SIG) and head[12:16] == b"IHDR":
+                return struct.unpack(">II", head[16:24])
+            if not head.startswith(JPEG_SIG):
+                return None
+            f.seek(2)
+            while True:
+                byte = f.read(1)
+                if not byte:
+                    return None
+                if byte != b"\xff":
+                    continue
+                marker = f.read(1)
+                while marker == b"\xff":
+                    marker = f.read(1)
+                if not marker or marker in (b"\x01", b"\xd8") or b"\xd0" <= marker <= b"\xd7":
+                    continue
+                length = struct.unpack(">H", f.read(2))[0]
+                if b"\xc0" <= marker <= b"\xcf" and marker not in (b"\xc4", b"\xc8", b"\xcc"):
+                    height, width = struct.unpack(">HH", f.read(5)[1:5])
+                    return width, height
+                f.seek(length - 2, 1)
+    except (OSError, struct.error):
+        return None
+
+
+def upscale_factor(picture, outputs, aspect="crop"):
+    """2 or 4 (the smallest that reaches the output, never more than 4), or None when the picture is big enough.
+
+    picture is (width, height); outputs is a list of (width, height). Crop-to-fill magnifies the picture
+    by the larger ratio, pad by the smaller one. With several outputs (Every size) the largest need counts.
+    """
+    if not picture or not picture[0] or not picture[1]:
+        return None
+    pick = max if aspect == "crop" else min
+    need = max(pick(ow / picture[0], oh / picture[1]) for ow, oh in outputs)
+    if need <= 1:
+        return None
+    return 2 if need <= 2 else 4
 
 
 UPLOAD_STAMP = re.compile(r"-\d{8}-\d{6}$")
@@ -207,6 +254,17 @@ class Studio:
         """The interpolation Smooth uses: rife when its model file and onnxruntime are here, else linear."""
         return "rife" if os.path.isfile(RIFE_MODEL) and self._onnx_ok() else "linear"
 
+    def plan_upscale(self, source, req):
+        """{factor, method} for Enhance small pictures, or None when it is off or the picture is big enough."""
+        if not req["enhance"]:
+            return None
+        names = list(stillmove_sizes.SIZES) if req["size"] == EVERY else [req["size"]]
+        factor = upscale_factor(image_size(source), [stillmove_sizes.SIZES[n] for n in names], req["aspect"])
+        if factor is None:
+            return None
+        method = "esrgan" if os.path.isfile(ESRGAN_MODEL) and self._onnx_ok() else "lanczos"
+        return {"factor": factor, "method": method}
+
     def options(self):
         presets = []
         for pid, (param, unit, lo, hi, default) in RANGES.items():
@@ -233,7 +291,12 @@ class Studio:
             ext = os.path.splitext(name)[1].lower()
             if ext in IMAGE_EXT and os.path.isfile(full) and _inside(self.input_root, full):
                 found.append((os.path.getmtime(full), name))
-        return [{"name": name, "url": "/inputs/" + name} for _, name in sorted(found, reverse=True)]
+        rows = []
+        for _, name in sorted(found, reverse=True):
+            size = image_size(os.path.join(self.input_root, name))
+            rows.append({"name": name, "url": "/inputs/" + name,
+                         "width": size[0] if size else None, "height": size[1] if size else None})
+        return rows
 
     def input_file(self, name):
         """The real path of an input picture, or raise: 400 for a bad name, 404 if missing or outside."""
@@ -259,7 +322,9 @@ class Studio:
             stamp = _stamp(time.time() + 1)
         with open(full, "wb") as f:
             f.write(body)
-        return {"name": saved, "url": "/inputs/" + saved}
+        size = image_size(full)
+        return {"name": saved, "url": "/inputs/" + saved,
+                "width": size[0] if size else None, "height": size[1] if size else None}
 
     # --- clips --------------------------------------------------------------------------
 
@@ -335,6 +400,9 @@ class Studio:
         smooth = body.get("smooth", 0)
         if isinstance(smooth, bool) or not isinstance(smooth, int) or smooth not in SMOOTH:
             raise ApiError(400, "smooth must be 0 (off), 2 or 4")
+        enhance = body.get("enhance", False)
+        if not isinstance(enhance, bool):
+            raise ApiError(400, "enhance must be true or false")
         if smooth and (FPS % smooth or round(seconds * FPS) % smooth):
             raise ApiError(400, "smooth %d needs seconds times fps to be a multiple of %d" % (smooth, smooth))
         image = body.get("image")
@@ -346,12 +414,13 @@ class Studio:
             raise ApiError(400, "layers need the isnet model and onnxruntime in the render python")
         return {"image": image, "preset": preset, "amount": float(amount), "seconds": float(seconds),
                 "size": size, "layers": layers, "depth": depth, "param": param, "aspect": aspect,
-                "smooth": smooth}
+                "smooth": smooth, "enhance": enhance}
 
     def start(self, body):
         req = self._validate(body)
         req["interp"] = self.interp_backend() if req["smooth"] else None
         source = self.input_file(req["image"])
+        req["upscale"] = self.plan_upscale(source, req)
         # Every size is one camera file, so it is built at the square frame; the render re-targets it per size.
         camera_size = "square" if req["size"] == EVERY else req["size"]
         width, height = stillmove_sizes.SIZES[camera_size]
@@ -380,7 +449,7 @@ class Studio:
             meta = {"name": clip, "made": made, "image": req["image"], "preset": req["preset"],
                     "amount": req["amount"], "seconds": req["seconds"], "size": req["size"], "fps": FPS,
                     "layers": req["layers"], "depth": req["depth"], "smooth": req["smooth"],
-                    "interp": req["interp"], "frames": expected}
+                    "interp": req["interp"], "upscale": req["upscale"], "frames": expected}
             with open(os.path.join(clip_dir, "clip.json"), "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
                 f.write("\n")
@@ -388,7 +457,8 @@ class Studio:
             job_id = uuid.uuid4().hex
             self.job = {"id": job_id, "state": "running", "message": "rendering", "clip": clip,
                         "frames": expected, "clip_dir": clip_dir, "every": req["size"] == EVERY,
-                        "smooth": {"factor": req["smooth"], "backend": req["interp"]} if req["smooth"] else None}
+                        "smooth": {"factor": req["smooth"], "backend": req["interp"]} if req["smooth"] else None,
+                        "upscale": req["upscale"]}
         threading.Thread(target=self._run, args=(job_id, command, clip_dir, expected, req["size"] == EVERY),
                          daemon=True).start()
         return job_id
@@ -401,7 +471,13 @@ class Studio:
         if req.get("size") == EVERY:
             index = cmd.index("-o")
             cmd[index:index] = ["--sizes", ",".join(EVERY_SIZES)]
+        else:
+            # Without these the render follows the picture's size, not the chosen square, wide or vertical.
+            width, height = stillmove_sizes.SIZES[req["size"]]
+            cmd += ["--width", str(width), "--height", str(height)]
         cmd += ["--aspect", req.get("aspect", "crop")]
+        if req.get("upscale"):
+            cmd += ["--upscale", str(req["upscale"]["factor"]), "--upscale-backend", req["upscale"]["method"]]
         if req.get("smooth"):
             cmd += ["--smooth", str(req["smooth"]), "--interp-backend", req.get("interp") or "linear"]
         if req["layers"]:
@@ -443,7 +519,8 @@ class Studio:
         if job["state"] == "done":
             frame = job["frames"]
         status = {"state": job["state"], "frame": frame, "frames": job["frames"], "message": job["message"],
-                  "clip": job["clip"], "notes": notes, "smooth": job.get("smooth")}
+                  "clip": job["clip"], "notes": notes, "smooth": job.get("smooth"),
+                  "upscale": job.get("upscale")}
         if job.get("every") and job["state"] == "done":
             status["files"] = every_files(os.path.basename(job["clip_dir"]), job["clip_dir"])
             status["zip"] = "/clips/%s/sizes.zip" % os.path.basename(job["clip_dir"])

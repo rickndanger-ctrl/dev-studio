@@ -29,7 +29,7 @@ ASPECT_MODES = ("crop", "pad")
 ASPECT_TOLERANCE = 0.01  # warn when the picture's aspect differs from the camera's by more than 1%
 
 
-def load_picture(path, width, height, aspect="crop", center=None):
+def load_picture(path, width, height, aspect="crop", center=None, transform=None):
     """(RGB uint8 array of width x height, aspect record) for the picture at path.
 
     crop (the default) scales the picture to cover the frame and cuts the overflow from the centre, so
@@ -43,6 +43,13 @@ def load_picture(path, width, height, aspect="crop", center=None):
         raise ValueError("aspect must be crop or pad")
     with Image.open(path) as img:
         img = img.convert("RGB")
+    if transform is not None:
+        # e.g. an upscaler on the source: it runs before the crop or pad, so the output size is unchanged.
+        # center is in source pixels, so it moves with the picture.
+        original = img.size
+        img = Image.fromarray(np.asarray(transform(np.asarray(img, dtype=np.uint8)), dtype=np.uint8))
+        if center is not None:
+            center = (center[0] * img.size[0] / original[0], center[1] * img.size[1] / original[1])
     sw, sh = img.size
     record = {"mode": aspect, "source": [sw, sh], "target": [width, height]}
     if (sw, sh) == (width, height):
@@ -154,7 +161,8 @@ def matte_center(image_path, matte):
 
 
 def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=None, fg_depth=None,
-           fit_margin=None, aspect="crop", center=None):
+           fit_margin=None, aspect="crop", center=None, upscale=None, upscale_backend="lanczos",
+           keep_colours=True):
     """Render image_path along cams with backend's depth. Returns the manifest dict.
 
     With a matte (an object with name and alpha(rgb)), frames are layered (see render_frames).
@@ -167,7 +175,28 @@ def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=Non
     if not cams.frames:
         raise ValueError("the camera path has no frames")
     started = time.perf_counter()
-    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect, center=center)
+    # --upscale enlarges the SOURCE picture before it is cropped or padded to the frame, so the output size
+    # and the camera stay as they are, and the frames are sharper (a 540 px photo is upscaled to 2160 px,
+    # then cut down to the 1080 px frame).
+    sizes = {}
+    transform = None
+    if upscale:
+        from stillmove.upscale import get_upscaler, upscale_image
+
+        upscaler = get_upscaler(upscale_backend, keep_colours=keep_colours)
+
+        def transform(source):
+            sizes["before"] = [source.shape[1], source.shape[0]]
+            big = upscale_image(source, upscale, upscaler)
+            sizes["after"] = [big.shape[1], big.shape[0]]
+            return big
+    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect, center=center,
+                                        transform=transform)
+    upscale_record = None
+    if upscale:
+        upscale_record = {"scale": upscale, "backend": upscale_backend, "source_before": sizes["before"],
+                          "source_after": sizes["after"], "output": [cams.width, cams.height],
+                          "keep_colours": keep_colours}
     sw, sh = aspect_record["source"]
     crop_center = list(center) if center is not None else [sw / 2.0, sh / 2.0]
     depth_started = time.perf_counter()
@@ -211,6 +240,7 @@ def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=Non
         "fit": fit_out.get("fit"),
         "aspect": aspect_record,
         "crop_center": [float(crop_center[0]), float(crop_center[1])],
+        "upscale": upscale_record,
     }
     if note:
         manifest["note"] = note

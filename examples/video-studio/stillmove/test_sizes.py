@@ -123,6 +123,15 @@ class SizesTest(unittest.TestCase):
         with zipfile.ZipFile(os.path.join(out, "sizes.zip")) as archive:
             self.assertEqual(sorted(archive.namelist()), ["square.gif", "vertical.gif", "wide.gif"])
 
+    def test_cam_without_width_keeps_the_camera_files_frame_size(self):
+        out = os.path.join(self.tmp, "one")
+        code, _, err = _run(["render", self.image, "--cam", self._camera_file(96, 96),
+                             "--backend", "plane", "-o", out])
+        self.assertEqual(code, 0, err)
+        with open(os.path.join(out, "manifest.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        self.assertEqual((manifest["width"], manifest["height"]), (96, 96))
+
     def test_unknown_size_is_an_error(self):
         code, _, err = _run(["render", self.image, "--preset", "dolly_in", "--sizes", "round", "-o",
                              os.path.join(self.tmp, "run")])
