@@ -2,6 +2,7 @@
 # CI gate for re-studio. Runs every check, prints each result, and exits 0 only if all passed.
 #   1. bash -n on every bash script: bin/*, install.sh, test/*.sh
 #   2. py_compile on every Python file: *.py and Python scripts in bin/
+#   2b. shellcheck on the bash scripts, only when installed (otherwise SKIP)
 #   3. unit tests: python3 -m unittest discover -s test -p 'test_*.py'
 #   4. screenshot of the viewer, only when chromium and node 22+ exist (otherwise SKIP)
 #   5. privacy scan of the tracked files (test/privacy.sh)
@@ -11,7 +12,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 REPO="$(dirname "$HERE")"
-cd "$REPO"
+cd "$REPO" || exit 1
 export RE_STUDIO_CI=1     # lets tests know they run inside ci.sh (the nested-layout test must not call ci.sh again)
 
 fail=0
@@ -55,7 +56,21 @@ for f in "${bash_files[@]}"; do
     printf '%s\n' "$out" >&2
   fi
 done
-[ "$bash_bad" -eq 0 ] && report PASS "bash -n (${#bash_files[@]} scripts)" || report FAIL "bash -n" "see errors above"
+if [ "$bash_bad" -eq 0 ]; then
+  report PASS "bash -n (${#bash_files[@]} scripts)"
+else
+  report FAIL "bash -n" "see errors above"
+fi
+
+# 1b. shellcheck (optional: SKIP when it is not installed) ------------------
+if [ -f test/shellcheck.sh ]; then
+  bash test/shellcheck.sh
+  case $? in
+    0) report PASS "shellcheck" ;;
+    77) report SKIP "shellcheck" "not installed" ;;
+    *) report FAIL "shellcheck" "see findings above" ;;
+  esac
+fi
 
 # 2. Python compile --------------------------------------------------------
 py_files=()
@@ -78,7 +93,11 @@ py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)
     printf '%s\n' "$out" >&2
   fi
 done
-[ "$py_bad" -eq 0 ] && report PASS "py_compile (${#py_files[@]} files)" || report FAIL "py_compile" "see errors above"
+if [ "$py_bad" -eq 0 ]; then
+  report PASS "py_compile (${#py_files[@]} files)"
+else
+  report FAIL "py_compile" "see errors above"
+fi
 
 # 3. unit tests ------------------------------------------------------------
 # PRIVACY_WORDS and PRIVACY_ALLOW are dropped for this step only: the tests set their own, and an inherited value

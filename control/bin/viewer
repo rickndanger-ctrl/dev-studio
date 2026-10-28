@@ -13,7 +13,7 @@ if systemctl --user list-unit-files studio-viewer.service >/dev/null 2>&1; then
   systemctl --user start studio-viewer.service 2>/dev/null
 fi
 if ! ss -ltn | grep -q "127.0.0.1:$PORT "; then
-  cd "$REPO/viewer"
+  cd "$REPO/viewer" || exit 1
   setsid nohup python3 server.py "$PORT" > "$STATE/viewer.log" 2>&1 < /dev/null &
   sleep 2
 fi

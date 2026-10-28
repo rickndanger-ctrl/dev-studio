@@ -68,6 +68,7 @@ else
   say "  skip     screenshots (optional): need chromium and node 22+ (found: ${chrome:-no chromium}, node ${node_major:-none})"
 fi
 
+# shellcheck disable=SC2088
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) warn "~/.local/bin is not on PATH: add it so the re-studio commands run from anywhere" ;;

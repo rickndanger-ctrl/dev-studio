@@ -27,6 +27,7 @@ else
   DIRS=$(python3 "$CFG" studio-dirs "$t")
   [ -n "$DIRS" ] || DIRS="''"
   RP=$(python3 "$CFG" remote-path)
+  # shellcheck disable=SC2016
   REMOTE=$(printf 'export PATH=%s:$PATH\nfor d in %s; do\n  case $d in "~"/*) d=$HOME/${d#"~/"};; esac\n  if [ -d "$d" ]; then cd "$d"; break; fi\ndone\nP=$(echo %s | base64 -d)\nherdr --session %s agent prompt %s "$P" >/dev/null && echo "dispatched to %s (%s)"\n' "$RP" "$DIRS" "$B" "$SESSION" "$arch" "$arch" "$t")
   if [ "${DISPATCH_SHOW:-}" = 1 ]; then
     printf '%s\n' "$REMOTE"
