@@ -82,6 +82,9 @@ puts the **Dev Studio** icon in your Dock. For the JEV router, put your TypeSafe
 
 Click the icon again later and you're back in the same team, still running.
 
+Want the team to mix Claude and Codex (and, later, local models), so the cheapest tool does each
+job? See [Mixed teams](docs/MIXED-TEAMS.md). It is written for non-programmers.
+
 If OMAC (the window manager) is running, the studio opens inside an **OMAC terminal tile**
 instead of a macOS Terminal window, so it sits in your tiled layout. Set `TERMINAL_APP` in
 `~/.dev-studio/studio.conf` to `omac`, `ghostty`, `iterm` or `terminal` to force one.
@@ -151,6 +154,10 @@ agents, the next click on the Dock icon rebuilds the team instead of reopening a
 | `studio web [start\|stop]` | the board as a web page (launchd keeps it up) |
 | `studio doctor` | check everything is installed |
 | `studio stop` | stop the studio's Herdr session and every agent in it |
+
+Mixed teams use the same `studio up`, with role flags: `--architect-kind`, `--main-kind`,
+`--worker-kind` and `--workers-mixed`. `studio status` shows which tool each role runs. The
+[Mixed teams guide](docs/MIXED-TEAMS.md) explains when to use which.
 
 Settings live in `~/.dev-studio/studio.conf` (`WORKERS`, models, `ROUTER`, `CLEF_URL`,
 `SOUNDS`). Per-project state (mailbox, `router.log`, `team.json`) lives in `<project>/.studio/`,

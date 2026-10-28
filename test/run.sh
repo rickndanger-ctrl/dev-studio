@@ -456,5 +456,15 @@ chmod 755 "$PROJECT/.studio/mail/outbox"
 check "send exits 1 when the outbox is read-only" test "$rc" = 1
 check "send names the codex sandbox"         grep -q "codex sandbox" <<<"$err"
 
+echo "Mixed-team guide: every flag it names exists, and the README links it"
+usage_text=$("$ROOT/bin/studio" help 2>&1)
+guide_flags=$(grep -o -- '--[a-z][a-z-]*' "$ROOT/docs/MIXED-TEAMS.md" | sort -u)
+missing=''
+for flag in $guide_flags; do
+  grep -qF -- "$flag" <<<"$usage_text" || missing="$missing $flag"
+done
+check "every --flag in the guide is in studio's usage" test -z "$missing"
+check "README links the mixed-team guide"    grep -qF 'docs/MIXED-TEAMS.md' "$ROOT/README.md"
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
