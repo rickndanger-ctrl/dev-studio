@@ -1,0 +1,7 @@
+{
+  "id": "beach_orbit",
+  "name": "Beach orbit",
+  "description": "The camera orbits the beach scene to the right.",
+  "fps": 24,
+  "segments": [{"preset": "orbit_right", "duration_s": 3}]
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "video-studio/shotplan/schema.json",
+  "title": "Shot plan",
+  "description": "A list of shots for the video studio: each shot is one still image moved by one camera-motion sequence.",
+  "$comment": "Rules JSON Schema cannot express, enforced by shotplan.py: (1) a shot's sequence is either inline ({segments}, fps taken from the plan) or a path to a sequence file relative to the plan file, whose fps must equal the plan's fps; it must pass camera_motion/sequences/validate.py and build without error, so presets exist and joins are continuous. (2) A shot's duration must equal its sequence's total duration (sum of segment duration_s) within half a frame. (3) Shot ids are unique. (4) transition is how a shot hands over to the NEXT shot: a crossfade of d seconds needs d > 0, d below both this shot's and the next shot's duration, and is not allowed on the last shot (which is always a cut). (5) Timeline: shot 0 starts at 0; each next shot starts at the previous end minus the crossfade. Shots never overlap beyond their crossfade. (6) image is a file path relative to the plan, or 'placeholder:<label>'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "fps", "width", "height", "shots"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "name": {"type": "string", "minLength": 1},
+    "fps": {"type": "integer", "minimum": 1, "maximum": 120},
+    "width": {"type": "integer", "minimum": 16, "maximum": 8192},
+    "height": {"type": "integer", "minimum": 16, "maximum": 8192},
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "image", "sequence", "duration", "transition"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "image": {"type": "string", "minLength": 1},
+          "sequence": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "object", "additionalProperties": false, "required": ["segments"],
+               "properties": {"segments": {"type": "array", "minItems": 1}}}
+            ]
+          },
+          "duration": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
+          "notes": {"type": "string"},
+          "transition": {
+            "oneOf": [
+              {"const": "cut"},
+              {"type": "object", "additionalProperties": false, "required": ["crossfade"],
+               "properties": {"crossfade": {"type": "number", "exclusiveMinimum": 0}}}
+            ]
+          }
+        }
+      }
+    }
+  }
+}

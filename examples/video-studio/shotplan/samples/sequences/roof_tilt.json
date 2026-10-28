@@ -1,0 +1,10 @@
+{
+  "id": "roof_tilt",
+  "name": "Roof tilt",
+  "description": "The camera tilts up to the roofline, then rises above it.",
+  "fps": 24,
+  "segments": [
+    {"preset": "tilt_up", "duration_s": 1.5},
+    {"preset": "crane_up", "duration_s": 1.5}
+  ]
+}

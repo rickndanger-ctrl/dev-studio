@@ -1,0 +1,33 @@
+{
+  "id": "travel_montage",
+  "name": "Travel montage",
+  "fps": 24,
+  "width": 1920,
+  "height": 1080,
+  "shots": [
+    {
+      "id": "city",
+      "image": "placeholder:city skyline",
+      "sequence": {"segments": [
+        {"preset": "crane_up", "duration_s": 2},
+        {"preset": "dolly_in", "duration_s": 2}
+      ]},
+      "duration": 4,
+      "transition": {"crossfade": 1.0}
+    },
+    {
+      "id": "beach",
+      "image": "placeholder:beach",
+      "sequence": "sequences/beach_orbit.json",
+      "duration": 3,
+      "transition": {"crossfade": 0.5}
+    },
+    {
+      "id": "sunset",
+      "image": "placeholder:sunset",
+      "sequence": {"segments": [{"preset": "dolly_zoom_in", "duration_s": 2}]},
+      "duration": 2,
+      "transition": "cut"
+    }
+  ]
+}

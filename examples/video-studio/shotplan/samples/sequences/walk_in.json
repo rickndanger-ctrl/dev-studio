@@ -1,0 +1,7 @@
+{
+  "id": "walk_in",
+  "name": "Walk in",
+  "description": "The camera dollies toward the front door.",
+  "fps": 24,
+  "segments": [{"preset": "dolly_in", "duration_s": 3}]
+}

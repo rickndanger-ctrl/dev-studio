@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stillmove</title>
+<style>
+:root { --bg: #fafafa; --fg: #111; --muted: #666; --line: #d0d0d0; --panel: #fff; --accent: #1a5fb4; --error: #c5221f; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; }
+}
+:root[data-theme="dark"] { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; max-width: 760px; }
+h1 { font-size: 1.25rem; margin: 0 0 4px; }
+.muted { color: var(--muted); }
+[hidden] { display: none !important; }
+#range, #warn { margin: 0; }
+.error { color: var(--error); }
+form { display: grid; gap: 12px; margin: 16px 0; }
+label { display: grid; gap: 4px; }
+select, input[type="file"], button { font: inherit; max-width: 100%; }
+button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--accent); cursor: pointer; }
+button[disabled] { opacity: 0.6; cursor: default; }
+#result img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+</style>
+</head>
+<body>
+<h1>Stillmove</h1>
+<p class="muted">Pick a still, pick a camera move, get a short preview. The depth is approximate, so expect stretched edges.</p>
+
+<form id="form">
+  <label>Image (PNG, JPEG or WEBP, up to 5 MB)
+    <input id="image" type="file" accept="image/png,image/jpeg,image/webp" required>
+  </label>
+  <label>Camera move
+    <select id="preset"></select>
+  </label>
+  <p id="range" class="muted"></p>
+  <label>Depth
+    <select id="backend"></select>
+  </label>
+  <p id="warn" class="error" hidden></p>
+  <button id="go" type="submit">Render</button>
+</form>
+<p id="status" class="muted" role="status"></p>
+<div id="result"></div>
+
+<script>
+(() => {
+  "use strict";
+  const MAX_BYTES = 5 * 1024 * 1024;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, attrs = {}) => {
+    const node = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs)) {
+      if (name === "text") node.textContent = value;
+      else node.setAttribute(name, value);
+    }
+    return node;
+  };
+  const say = (text, isError) => {
+    $("status").className = isError ? "error" : "muted";
+    $("status").textContent = text;
+  };
+
+  let presetsById = new Map();
+
+  function showRange() {
+    const preset = presetsById.get($("preset").value);
+    const range = preset && preset.safe_range;
+    if (!range) {
+      $("range").textContent = "";
+      $("warn").hidden = true;
+      return;
+    }
+    $("range").textContent =
+      `Safe range for one photo: up to ${range.limit} ${range.unit} (this move: ${range.value}).`;
+    $("warn").textContent = "Beyond the safe range: expect torn edges.";
+    $("warn").hidden = !range.exceeds;
+  }
+
+  async function getJson(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  async function init() {
+    try {
+      const [presets, backends] = await Promise.all([getJson("/api/presets"), getJson("/api/backends")]);
+      $("preset").replaceChildren(...presets.map((p) => {
+        const option = el("option", { value: p.id, text: p.name || p.id });
+        if (p.description) option.title = p.description;
+        return option;
+      }));
+      presetsById = new Map(presets.map((p) => [p.id, p]));
+      showRange();
+      $("backend").replaceChildren(...backends.map((b) => el("option", { value: b, text: b })));
+      if (backends.includes("gradient")) $("backend").value = "gradient";
+    } catch (err) {
+      say(`Could not load the options (${err.message}).`, true);
+    }
+  }
+
+  $("preset").addEventListener("change", showRange);
+
+  $("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const file = $("image").files[0];
+    if (!file) return say("Choose an image first.", true);
+    if (file.size > MAX_BYTES) return say("That image is larger than 5 MB.", true);
+    const data = new FormData();
+    data.append("image", file);
+    data.append("preset", $("preset").value);
+    data.append("backend", $("backend").value);
+    $("go").disabled = true;
+    $("result").replaceChildren();
+    say("Rendering…", false);
+    try {
+      const res = await fetch("/api/render", { method: "POST", body: data, headers: { "X-Stillmove-Request": "1" } });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      const manifest = await getJson(`/api/jobs/${encodeURIComponent(body.id)}`);
+      $("result").replaceChildren(el("img", { src: manifest.preview, alt: "Preview of the camera move" }));
+      say(`${manifest.frames} frames, ${manifest.width}x${manifest.height}, depth: ${manifest.backend}.`, false);
+    } catch (err) {
+      say(`Render failed: ${err.message}`, true);
+    } finally {
+      $("go").disabled = false;
+    }
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>

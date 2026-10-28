@@ -169,3 +169,7 @@ Read `HANDOFF.md`, `DESIGN.md` and `LESSONS.md`. Tests: `PATH="/bin:$PATH" /bin/
 ## Example build: camera-motion
 
 `examples/camera-motion/` is the first project the studios built together (Mini 1: presets, shot sequences and docs; Mini 2: engine, previews, exports and web page). It's a stdlib-only Python package of cinematic camera moves — dolly, crane, orbit, pan, tilt, dolly zoom — and shot sequences that chain them, with animated previews, exports to RealEstate10K, JSON, Blender and glTF, import and preset matching, and a local web page. Start with [its README](examples/camera-motion/README.md) and [tutorial](examples/camera-motion/docs/TUTORIAL.md).
+
+## Example build: video-studio
+
+`examples/video-studio/` is the second project the studios built: still-to-motion (`stillmove`) turns one photo and a camera-motion move into a short clip, using an open depth model or no model at all, and `shotplan` lays out a multi-shot plan, checks it, and renders it with crossfades. It is an independent, clean-room project. Start with [its README](examples/video-studio/README.md) and [tutorial](examples/video-studio/docs/TUTORIAL.md).

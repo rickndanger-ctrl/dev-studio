@@ -1,0 +1,38 @@
+{
+  "dolly": {
+    "param": "distance",
+    "limit": 0.2,
+    "unit": "scene units",
+    "holes_at_limit": 0.0765
+  },
+  "dolly_zoom": {
+    "param": "distance",
+    "limit": 1.0,
+    "unit": "scene units",
+    "holes_at_limit": 0.0688
+  },
+  "crane": {
+    "param": "distance",
+    "limit": 0.2,
+    "unit": "scene units",
+    "holes_at_limit": 0.0712
+  },
+  "orbit": {
+    "param": "angle",
+    "limit": 8.0,
+    "unit": "degrees",
+    "holes_at_limit": 0.0782
+  },
+  "pan": {
+    "param": "angle",
+    "limit": 4.0,
+    "unit": "degrees",
+    "holes_at_limit": 0.0774
+  },
+  "tilt": {
+    "param": "angle",
+    "limit": 3.0,
+    "unit": "degrees",
+    "holes_at_limit": 0.0706
+  }
+}

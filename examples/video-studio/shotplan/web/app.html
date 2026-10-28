@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shot plans</title>
+<style>
+:root { --bg: #fafafa; --fg: #111; --muted: #666; --line: #d0d0d0; --panel: #fff; --accent: #1a5fb4; --error: #c5221f; --ok: #1e7b34; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; --ok: #81c995; }
+}
+:root[data-theme="dark"] { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; --ok: #81c995; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.error { color: var(--error); }
+.ok { color: var(--ok); }
+[hidden] { display: none !important; }
+select, input { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; min-width: 0; }
+input[type="number"] { width: 6.5rem; }
+button { font: inherit; padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--accent); cursor: pointer; }
+button:disabled { color: var(--muted); cursor: default; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 600; }
+tr.bad { background: rgba(197, 34, 31, 0.08); }
+.table-wrap { overflow-x: auto; }
+.errors { margin: 8px 0 0; padding-left: 1.2rem; color: var(--error); }
+.timeline { display: block; width: 100%; height: auto; margin-top: 12px; }
+#gif { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; }
+/* One column at every width: the shot editor and the preview each get the full page width. */
+.grid2 { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.moves { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shot plans</h1>
+  <span class="muted">127.0.0.1 only</span>
+</header>
+
+<section class="panel">
+  <div class="toolbar">
+    <label>Plan <select id="plans"></select></label>
+    <span id="status" class="muted"></span>
+  </div>
+</section>
+
+<div class="grid2">
+  <section class="panel" aria-label="Shots">
+    <h2 id="plan-title">Shots</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>shot</th><th>preset</th><th>seconds</th><th>transition</th><th>sequence</th></tr></thead>
+        <tbody id="shots"></tbody>
+      </table>
+    </div>
+    <ul id="errors" class="errors" hidden></ul>
+    <p id="edit-note" class="muted"></p>
+  </section>
+
+  <section class="panel" aria-label="Render">
+    <h2>Preview</h2>
+    <div class="toolbar">
+      <button id="render" type="button" disabled>Render preview</button>
+      <span id="render-status" class="muted"></span>
+    </div>
+    <img id="gif" alt="preview" hidden>
+    <img id="timeline" class="timeline" alt="timeline" hidden>
+    <div class="table-wrap" id="rows-wrap" hidden>
+      <table>
+        <thead><tr><th>start</th><th>end</th><th>shot</th><th>moves</th><th>transition</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { name: null, plan: null, catalog: [], rows: [], checkTimer: null, polling: null };
+
+function setStatus(text, cls) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = cls || "muted";
+}
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+
+async function postPlan(url) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan: state.plan }),
+  });
+  const body = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, body };
+}
+
+function cell(text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+// The shot's inline sequence, when it has one. A sequence file cannot be edited here.
+function inlineSegments(shot) {
+  return shot.sequence && typeof shot.sequence === "object" ? shot.sequence.segments : null;
+}
+
+// The moves of a shot as text, for shots that cannot be edited here.
+function movesText(shot) {
+  const segs = inlineSegments(shot);
+  if (segs) {
+    return segs.map((s) => s.preset + " " + Number(s.duration_s) + "s").join(", ");
+  }
+  const row = (state.rows || []).find((r) => r.shot === shot.id);
+  const n = row ? row.moves : "?";
+  return n + (n === 1 ? " move" : " moves") + ", from file " + shot.sequence;
+}
+
+// The preset box for an editable shot, or the moves as text for a read-only one.
+function presetCell(shot) {
+  const segs = inlineSegments(shot);
+  if (segs && segs.length === 1) return presetSelect(shot);
+  const span = document.createElement("span");
+  span.className = "moves";
+  span.textContent = movesText(shot);
+  return span;
+}
+
+function presetSelect(shot) {
+  const select = document.createElement("select");
+  for (const id of state.catalog) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id;
+    select.appendChild(opt);
+  }
+  const segs = inlineSegments(shot);
+  select.value = segs && segs.length ? segs[0].preset : "";
+  select.disabled = !(segs && segs.length === 1);
+  select.addEventListener("change", () => { segs[0].preset = select.value; scheduleCheck(); });
+  return select;
+}
+
+function durationInput(shot) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0.01";
+  input.step = "0.05";
+  input.value = shot.duration;
+  const segs = inlineSegments(shot);
+  input.disabled = !(segs && segs.length === 1);
+  input.addEventListener("change", () => {
+    const value = Number(input.value);
+    shot.duration = value;
+    if (segs && segs.length === 1) segs[0].duration_s = value;
+    scheduleCheck();
+  });
+  return input;
+}
+
+function transitionCell(shot) {
+  const wrap = document.createElement("span");
+  const select = document.createElement("select");
+  for (const [value, label] of [["cut", "cut"], ["crossfade", "crossfade"]]) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    select.appendChild(opt);
+  }
+  const amount = document.createElement("input");
+  amount.type = "number";
+  amount.min = "0.01";
+  amount.step = "0.05";
+  const isFade = shot.transition && typeof shot.transition === "object";
+  select.value = isFade ? "crossfade" : "cut";
+  amount.value = isFade ? shot.transition.crossfade : 0.5;
+  amount.hidden = !isFade;
+  const apply = () => {
+    if (select.value === "cut") { shot.transition = "cut"; amount.hidden = true; }
+    else { shot.transition = { crossfade: Number(amount.value) }; amount.hidden = false; }
+    scheduleCheck();
+  };
+  select.addEventListener("change", apply);
+  amount.addEventListener("change", apply);
+  wrap.appendChild(select);
+  wrap.appendChild(document.createTextNode(" "));
+  wrap.appendChild(amount);
+  return wrap;
+}
+
+function renderPlan() {
+  const plan = state.plan;
+  $("plan-title").textContent = plan.name || "Shots";
+  const tbody = $("shots");
+  tbody.replaceChildren();
+  plan.shots.forEach((shot, i) => {
+    const tr = document.createElement("tr");
+    tr.dataset.index = String(i);
+    tr.appendChild(cell(String(i)));
+    tr.appendChild(cell(shot.id));
+    const presetTd = document.createElement("td");
+    presetTd.appendChild(presetCell(shot));
+    tr.appendChild(presetTd);
+    const durTd = document.createElement("td");
+    durTd.appendChild(durationInput(shot));
+    tr.appendChild(durTd);
+    const transTd = document.createElement("td");
+    transTd.appendChild(transitionCell(shot));
+    tr.appendChild(transTd);
+    const seq = inlineSegments(shot);
+    tr.appendChild(cell(seq ? (seq.length === 1 ? "inline" : seq.length + " moves (inline)") : "file: " + shot.sequence));
+    tbody.appendChild(tr);
+  });
+  const hasFile = plan.shots.some((s) => !inlineSegments(s));
+  $("edit-note").textContent = hasFile || plan.shots.some((s) => inlineSegments(s) && inlineSegments(s).length > 1)
+    ? "Shots with a sequence file, or more than one move, are shown read-only here; edit the plan file to change them."
+    : "";
+}
+
+function showResult(data) {
+  state.rows = data.rows || [];
+  const list = $("errors");
+  list.replaceChildren();
+  const bad = new Set();
+  for (const message of data.errors || []) {
+    const li = document.createElement("li");
+    li.textContent = message;
+    list.appendChild(li);
+    const m = /^shots\[(\d+)\]/.exec(message);
+    if (m) bad.add(m[1]);
+  }
+  list.hidden = list.children.length === 0;
+  for (const tr of document.querySelectorAll("#shots tr")) {
+    tr.classList.toggle("bad", bad.has(tr.dataset.index));
+  }
+  $("render").disabled = list.children.length > 0 || state.polling !== null;
+  if (data.svg) {
+    const img = $("timeline");
+    img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(data.svg)));
+    img.hidden = false;
+  } else {
+    $("timeline").hidden = true;
+  }
+  const tbody = $("rows");
+  tbody.replaceChildren();
+  for (const r of data.rows || []) {
+    const tr = document.createElement("tr");
+    tr.appendChild(cell(r.start.toFixed(3)));
+    tr.appendChild(cell(r.end.toFixed(3)));
+    tr.appendChild(cell(r.shot));
+    tr.appendChild(cell(String(r.moves)));
+    tr.appendChild(cell(r.transition));
+    tbody.appendChild(tr);
+  }
+  $("rows-wrap").hidden = !(data.rows && data.rows.length);
+}
+
+function scheduleCheck() {
+  clearTimeout(state.checkTimer);
+  state.checkTimer = setTimeout(runCheck, 300);
+}
+
+async function runCheck() {
+  if (!state.plan) return;
+  const res = await postPlan("/api/check");
+  if (res.ok) showResult(res.body);
+  else setStatus(res.body.error || "check failed", "error");
+}
+
+async function loadPlan(name) {
+  state.name = name;
+  setStatus("Loading…");
+  try {
+    const data = await getJSON("/api/plan?name=" + encodeURIComponent(name));
+    state.plan = data.plan;
+    state.rows = data.rows || [];
+    renderPlan();
+    showResult(data);
+    setStatus("");
+  } catch (err) {
+    setStatus(err.message, "error");
+  }
+}
+
+function setBusy(busy) {
+  $("render").disabled = busy || $("errors").children.length > 0;
+  $("render").textContent = busy ? "Rendering…" : "Render preview";
+}
+
+function pollStatus() {
+  clearInterval(state.polling);
+  state.polling = setInterval(async () => {
+    try {
+      const s = await getJSON("/api/render/status");
+      if (s.state === "running") { $("render-status").textContent = s.message; return; }
+      clearInterval(state.polling);
+      state.polling = null;
+      setBusy(false);
+      if (s.state === "done") {
+        $("render-status").textContent = s.message;
+        $("render-status").className = "ok";
+        const img = $("gif");
+        img.src = s.gif + "?t=" + Date.now();
+        img.hidden = false;
+      } else {
+        $("render-status").textContent = s.message || "render failed";
+        $("render-status").className = "error";
+      }
+    } catch (err) {
+      clearInterval(state.polling);
+      state.polling = null;
+      setBusy(false);
+      $("render-status").textContent = err.message;
+      $("render-status").className = "error";
+    }
+  }, 1000);
+}
+
+async function startRender() {
+  $("render-status").textContent = "";
+  $("render-status").className = "muted";
+  const res = await postPlan("/api/render");
+  if (res.status === 202) {
+    setBusy(true);
+    $("render-status").textContent = "rendering…";
+    pollStatus();
+  } else if (res.status === 409) {
+    $("render-status").textContent = "a render is already running";
+    $("render-status").className = "error";
+  } else {
+    $("render-status").textContent = res.body.error || "render refused";
+    $("render-status").className = "error";
+  }
+}
+
+async function start() {
+  try {
+    const [plans, catalog, current] = await Promise.all([
+      getJSON("/api/plans"),
+      getJSON("/api/catalog"),
+      getJSON("/api/render/status"),
+    ]);
+    state.catalog = catalog;
+    const select = $("plans");
+    for (const p of plans) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.title;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => loadPlan(select.value));
+    $("render").addEventListener("click", startRender);
+    if (plans.length) await loadPlan(plans[0].name);
+    if (current.state === "running") { setBusy(true); pollStatus(); }
+  } catch (err) {
+    setStatus(err.message, "error");
+  }
+}
+
+start();
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# GitHub Actions workflow for video-studio (stillmove and shotplan: tests and install check).
+# Place this file at .github/workflows/video-studio.yml in the repository root.
+# GitHub only runs workflows from .github/workflows/, so copy it there.
+# It runs in examples/video-studio, so keep the project in that folder. camera-motion must sit
+# next to it at examples/camera-motion; this workflow installs it from there.
+# The depth model (onnxruntime) is not installed here: the tests use the fake backends.
+
+name: video-studio
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.12"]
+        # Ubuntu 26.04 (ubuntu-latest) has no Python 3.9; macOS keeps 3.9.
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
+    defaults:
+      run:
+        working-directory: examples/video-studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -W error -m unittest
+      - name: Install
+        run: |
+          pip install ../camera-motion
+          pip install .
+      - name: Doctor
+        run: stillmove doctor

@@ -1,0 +1,30 @@
+{
+  "id": "house_tour",
+  "name": "House tour",
+  "fps": 24,
+  "width": 1920,
+  "height": 1080,
+  "shots": [
+    {
+      "id": "front",
+      "image": "placeholder:front of house",
+      "sequence": "sequences/walk_in.json",
+      "duration": 3,
+      "transition": {"crossfade": 0.5}
+    },
+    {
+      "id": "kitchen",
+      "image": "placeholder:kitchen",
+      "sequence": {"segments": [{"preset": "pan_left", "duration_s": 2}]},
+      "duration": 2,
+      "transition": {"crossfade": 0.5}
+    },
+    {
+      "id": "roof",
+      "image": "placeholder:roofline",
+      "sequence": "sequences/roof_tilt.json",
+      "duration": 3,
+      "transition": "cut"
+    }
+  ]
+}
