@@ -466,5 +466,18 @@ done
 check "every --flag in the guide is in studio's usage" test -z "$missing"
 check "README links the mixed-team guide"    grep -qF 'docs/MIXED-TEAMS.md' "$ROOT/README.md"
 
+echo "Shellcheck: every tracked bash script (bash shebang or shellcheck shell=bash) is clean"
+if command -v shellcheck >/dev/null 2>&1; then
+  # Same selection as the public lint job, so a sourced library is checked here too.
+  if files=$(cd "$ROOT" && git ls-files | xargs grep -lE '^#!.*bash|^# shellcheck shell=bash' -- 2>/dev/null); [ -z "$files" ] \
+     || (cd "$ROOT" && printf '%s\n' "$files" | xargs shellcheck); then
+    pass=$((pass + 1)); echo "  PASS shellcheck"
+  else
+    fail=$((fail + 1)); echo "  FAIL shellcheck"
+  fi
+else
+  echo "  SKIP shellcheck is not installed"
+fi
+
 echo; echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

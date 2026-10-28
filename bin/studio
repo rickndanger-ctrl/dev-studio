@@ -172,7 +172,10 @@ grant_under() { # root path
 # not inside its .git. Anything else is skipped with a warning that names the line.
 # macOS folders are case-insensitive, so ".GIT" is the folder ".git". Every name check below runs on a
 # lower-cased copy of the path.
-_lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+_lower() {
+  # shellcheck disable=SC2018,SC2019
+  printf '%s' "$1" | tr 'A-Z' 'a-z'
+}
 
 # Sets BELOW to the part of real below project, both lower-cased. Returns 1 if real is not inside project.
 _below() { # real project
@@ -352,6 +355,7 @@ team_uses() {
 team_suffix() {
   local kinds
   if [ -n "$WORKER_KINDS" ]; then
+    # shellcheck disable=SC2086
     kinds=$(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" $WORKER_KINDS | sort -u)
   else
     kinds=$(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER" | sort -u)
@@ -710,6 +714,7 @@ cmd_up() {
       n=$((n + 1))
     done
   fi
+  # shellcheck disable=SC2086
   for k in $(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER" $WORKER_KINDS | sort -u); do
     command -v "$k" >/dev/null 2>&1 || die "$k isn't installed."
   done
