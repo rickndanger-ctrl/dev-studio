@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+### Added
+
+- Make a clip has an "Every size" choice: one render makes the square, wide and vertical versions,
+  each with its own preview and download, plus a zip of all three.
+- `stillmove render --sizes square,wide,vertical` renders one move in all three shapes into one folder each,
+  plus `sizes.zip`. The crop is centred on the subject (the matte's outline with `--layers`), and a
+  camera file (`--cam`) is adjusted to each shape with the same vertical field of view.
+
 ## 0.2.1
 
 ### Added

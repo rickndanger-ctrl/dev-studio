@@ -138,6 +138,7 @@ ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
         <a id="dl-mp4" class="button" href="#">Download MP4</a>
         <a id="dl-gif" class="button" href="#">Download GIF</a>
       </div>
+      <div id="every" hidden></div>
     </section>
   </div>
 </div>
@@ -354,6 +355,10 @@ async function loadOptions() {
   fillMoves();
   fillSeconds();
   fillSizes("size");
+  const every = document.createElement("option");
+  every.value = "every";
+  every.textContent = "Every size (square, wide and vertical)";
+  $("size").appendChild(every);
   fillSizes("promo-size");
   fillOptions();
   $("render").disabled = false;
@@ -441,7 +446,40 @@ function showFitNote(id, notes) {
   $(id).hidden = list.length === 0;
 }
 
+function showEvery(clip, files, zip, notes) {
+  const box = $("every");
+  box.innerHTML = "";
+  $("video").hidden = true;
+  $("downloads").hidden = true;
+  showFitNote("fit-note", notes);
+  for (const row of files) {
+    const figure = document.createElement("div");
+    figure.className = "field";
+    const title = document.createElement("h3");
+    title.textContent = (SIZE_LABELS[row.size] || row.size);
+    figure.appendChild(title);
+    const media = document.createElement(row.mp4 ? "video" : "img");
+    media.setAttribute(row.mp4 ? "controls" : "alt", "");
+    media.setAttribute("src", row.mp4 || row.gif);
+    media.style.maxWidth = "100%";
+    figure.appendChild(media);
+    const link = document.createElement("a");
+    link.className = "button";
+    link.textContent = "Download " + (row.mp4 ? "MP4" : "GIF");
+    link.setAttribute("href", (row.mp4 || row.gif) + "?download=1");
+    figure.appendChild(link);
+    box.appendChild(figure);
+  }
+  const all = document.createElement("a");
+  all.className = "button";
+  all.textContent = "Download all (zip)";
+  all.setAttribute("href", zip + "?download=1");
+  box.appendChild(all);
+  box.hidden = false;
+}
+
 function showClip(clip, notes) {
+  $("every").hidden = true;
   const dir = encodeURIComponent(clipDir(clip));
   const mp4 = "clips/" + dir + "/preview.mp4";
   const gif = "clips/" + dir + "/preview.gif";
@@ -518,7 +556,8 @@ async function checkStatus() {
       sayPromo("Your promo is ready.", "ok");
     } else {
       $("progress-wrap").hidden = true;
-      showClip(status.clip, status.notes);
+      if (status.files) showEvery(status.clip, status.files, status.zip, status.notes);
+      else showClip(status.clip, status.notes);
       say("Your clip is ready.", "ok");
     }
     loadClips();
@@ -562,6 +601,7 @@ async function makeClip() {
   };
   setRenderButtons(true);
   $("video").hidden = true;
+  $("every").hidden = true;
   $("fit-note").hidden = true;
   $("downloads").hidden = true;
   say("Starting…", "muted");

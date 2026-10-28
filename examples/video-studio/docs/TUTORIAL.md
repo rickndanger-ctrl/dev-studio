@@ -79,6 +79,13 @@ fake:
 python3 -m stillmove.cli render docs/example/input.png --preset dolly_in --backend gradient -o ~/video-tutorial/dolly-in
 ```
 
+The same move can make all three shapes in one render: square, wide and vertical, each in its own folder,
+with a zip of the three. This uses the fake plane depth:
+
+```sh
+python3 -m stillmove.cli render docs/example/input.png --preset dolly_in --seconds 1 --fps 12 --sizes square,wide,vertical --backend plane -o ~/video-tutorial/every-size
+```
+
 ### Mesh for Blender (optional)
 
 `mesh` turns the same still into a textured grid at its depth, and writes a Blender scene that moves
@@ -126,6 +133,9 @@ python3 -m makeclip --port 8820
 
 Open http://127.0.0.1:8820/ and stop with Ctrl-C. After `pip install .`, the same page starts with
 `makeclip --port 8820`.
+
+The Make a clip size picker has an "Every size" choice: one render makes the square, wide and vertical
+versions, each with its own download, and a zip with all three.
 
 The page has two tabs:
 

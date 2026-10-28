@@ -39,6 +39,7 @@ from camera_motion.export.formats import to_json  # noqa: E402
 from camera_motion.presets.validate import load_json  # noqa: E402
 
 import shotplan as shotplan_checker  # noqa: E402  (its check validates a promo plan before it renders)
+from stillmove import sizes as stillmove_sizes  # noqa: E402  (output shapes; read at call time)
 
 CAMERA_MOTION = os.path.dirname(os.path.dirname(os.path.abspath(camera_motion.__file__)))  # the folder holding camera_motion/
 RENDER_PYTHON_ENV = "MAKECLIP_RENDER_PYTHON"
@@ -53,7 +54,10 @@ FPS = 24
 CLIP_LIMIT = 20
 ISNET_MODEL = os.path.join(os.path.expanduser("~"), "models", "isnet-general-use", "isnet-general-use.onnx")
 DEPTH_MODEL = os.path.join(os.path.expanduser("~"), "models", "depth-anything-v2-small", "model.onnx")
-SIZES = {"square": (1080, 1080), "wide": (1920, 1080), "vertical": (1080, 1920)}
+# "every" renders each of these into its own folder (stillmove render --sizes), plus sizes.zip.
+EVERY = "every"
+EVERY_SIZES = ("square", "wide", "vertical")
+CLIP_TYPES = {"mp4": "video/mp4", "gif": "image/gif", "zip": "application/zip"}
 SECONDS = {"min": 2, "max": 8, "default": 4}
 # preset id -> (param, unit, min, max, default). Orbits keep the current distance (no radius).
 RANGES = {
@@ -209,7 +213,7 @@ class Studio:
         return {
             "presets": presets,
             "durations": dict(SECONDS),
-            "sizes": [{"id": k, "w": w, "h": h} for k, (w, h) in SIZES.items()],
+            "sizes": [{"id": k, "w": w, "h": h} for k, (w, h) in stillmove_sizes.SIZES.items()],
             "depth": {"simple": True, "real": real_depth},
             "layers": layers,
         }
@@ -270,7 +274,8 @@ class Studio:
             meta_path = os.path.join(folder, "clip.json")
             has_mp4 = os.path.isfile(os.path.join(folder, "preview.mp4"))
             has_gif = os.path.isfile(os.path.join(folder, "preview.gif"))
-            if not (os.path.isfile(meta_path) and (has_mp4 or has_gif)):
+            files = every_files(name, folder)
+            if not (os.path.isfile(meta_path) and (has_mp4 or has_gif or files)):
                 continue
             try:
                 meta = load_json(meta_path)
@@ -288,6 +293,8 @@ class Studio:
                 "mp4": "/clips/%s/preview.mp4" % name if has_mp4 else None,
                 "gif": "/clips/%s/preview.gif" % name if os.path.isfile(gif) else None,
                 "notes": fit_notes(folder),
+                "files": files,
+                "zip": "/clips/%s/sizes.zip" % name if os.path.isfile(os.path.join(folder, "sizes.zip")) else None,
             }))
         rows.sort(key=lambda item: item[0], reverse=True)
         return [row for _, row in rows[:CLIP_LIMIT]]
@@ -308,7 +315,7 @@ class Studio:
         if not _is_number(seconds) or not (SECONDS["min"] <= seconds <= SECONDS["max"]):
             raise ApiError(400, "seconds must be a number from %s to %s" % (SECONDS["min"], SECONDS["max"]))
         size = body.get("size")
-        if size not in SIZES:
+        if size != EVERY and size not in stillmove_sizes.SIZES:
             raise ApiError(400, "size must be square, wide or vertical")
         layers = body.get("layers", False)
         if not isinstance(layers, bool):
@@ -332,7 +339,9 @@ class Studio:
     def start(self, body):
         req = self._validate(body)
         source = self.input_file(req["image"])
-        width, height = SIZES[req["size"]]
+        # Every size is one camera file, so it is built at the square frame; the render re-targets it per size.
+        camera_size = "square" if req["size"] == EVERY else req["size"]
+        width, height = stillmove_sizes.SIZES[camera_size]
         catalog_preset = json_copy(self.catalog[req["preset"]])
         sign = -1.0 if catalog_preset["params"].get(req["param"], 1.0) < 0 else 1.0
         params = dict(catalog_preset["params"])
@@ -364,8 +373,9 @@ class Studio:
             command = self._command(source, cam_path, clip_dir, req)
             job_id = uuid.uuid4().hex
             self.job = {"id": job_id, "state": "running", "message": "rendering", "clip": clip,
-                        "frames": expected, "clip_dir": clip_dir}
-        threading.Thread(target=self._run, args=(job_id, command, clip_dir, expected), daemon=True).start()
+                        "frames": expected, "clip_dir": clip_dir, "every": req["size"] == EVERY}
+        threading.Thread(target=self._run, args=(job_id, command, clip_dir, expected, req["size"] == EVERY),
+                         daemon=True).start()
         return job_id
 
     def _command(self, source, cam_path, clip_dir, req):
@@ -373,6 +383,9 @@ class Studio:
                "--backend", "da2-small" if req["depth"] == "real" else "plane", "-o", clip_dir]
         if self.has_ffmpeg:
             cmd.insert(cmd.index("-o"), "--mp4")
+        if req.get("size") == EVERY:
+            index = cmd.index("-o")
+            cmd[index:index] = ["--sizes", ",".join(EVERY_SIZES)]
         cmd += ["--aspect", req.get("aspect", "crop")]
         if req["layers"]:
             cmd += ["--layers", "--matte", "isnet"]
@@ -380,21 +393,15 @@ class Studio:
                 cmd += ["--fg-depth", "4.6"]
         return cmd
 
-    def _run(self, job_id, command, clip_dir, expected):
+    def _run(self, job_id, command, clip_dir, expected, every=False):
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join([VIDEO_STUDIO, CAMERA_MOTION, env.get("PYTHONPATH", "")])
         try:
             code, err = self.renderer(command, env, clip_dir, expected)
-            has_mp4 = os.path.isfile(os.path.join(clip_dir, "preview.mp4"))
-            has_gif = os.path.isfile(os.path.join(clip_dir, "preview.gif"))
-            if code == 0 and has_mp4:
-                state = ("done", "clip ready")
-            elif code == 0 and has_gif and not self.has_ffmpeg:
-                state = ("done", "clip ready as a GIF: install ffmpeg to get an MP4")
-            elif code == 0:
-                state = ("error", "the render finished but wrote no preview.mp4 or preview.gif")
+            if every:
+                state = _every_state(code, err, clip_dir)
             else:
-                state = ("error", err or "the render failed (status %s)" % code)
+                state = _single_state(code, err, clip_dir, self.has_ffmpeg)
         except Exception as exc:  # any failure is the job's error message
             state = ("error", str(exc) or type(exc).__name__)
         with self._lock:
@@ -418,8 +425,12 @@ class Studio:
         notes = fit_notes(job["clip_dir"]) if job["state"] == "done" else []
         if job["state"] == "done":
             frame = job["frames"]
-        return {"state": job["state"], "frame": frame, "frames": job["frames"], "message": job["message"],
-                "clip": job["clip"], "notes": notes}
+        status = {"state": job["state"], "frame": frame, "frames": job["frames"], "message": job["message"],
+                  "clip": job["clip"], "notes": notes}
+        if job.get("every") and job["state"] == "done":
+            status["files"] = every_files(os.path.basename(job["clip_dir"]), job["clip_dir"])
+            status["zip"] = "/clips/%s/sizes.zip" % os.path.basename(job["clip_dir"])
+        return status
 
     # --- make a promo: two to six pictures in one plan --------------------------------------
 
@@ -618,7 +629,7 @@ class Studio:
         if aspect not in ASPECTS:
             raise ApiError(400, "aspect must be crop or pad")
         size = body.get("size")
-        if size not in SIZES:
+        if size not in stillmove_sizes.SIZES:
             raise ApiError(400, "size must be square, wide or vertical")
         source = body.get("source")
         plan_dir = None
@@ -722,7 +733,7 @@ def _sign(preset, catalog):
 
 def build_promo_plan(shots, size, catalog):
     """The shotplan plan.json for a promo: one inline segment per shot, pictures in images/."""
-    width, height = SIZES[size]
+    width, height = stillmove_sizes.SIZES[size]
     rows = []
     for index, shot in enumerate(shots):
         if shot.get("raw_sequence") is not None:
@@ -786,7 +797,7 @@ def _editable_shot(shot, catalog):
 
 
 def _size_of(width, height):
-    for name, (w, h) in SIZES.items():
+    for name, (w, h) in stillmove_sizes.SIZES.items():
         if (width, height) == (w, h):
             return name
     return None
@@ -879,14 +890,15 @@ class MakeClipHandler(BaseHTTPRequestHandler):
             ctype = IMAGE_EXT.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
             with open(full, "rb") as f:
                 return self._send(200, ctype, f.read())
-        match = re.fullmatch(r"/clips/([^/]+)/(preview\.mp4|preview\.gif)", route)
+        match = re.fullmatch(r"/clips/([^/]+)/((?:(?:square|wide|vertical)/)?preview\.(?:mp4|gif)|sizes\.zip)",
+                             route)
         if match:
             full = studio.clip_file(match.group(1), match.group(2))
-            ctype = "video/mp4" if full.endswith(".mp4") else "image/gif"
+            ctype = CLIP_TYPES[full.rsplit(".", 1)[1]]
             headers = []
             if parse_qs(url.query).get("download") == ["1"]:
                 headers.append(("Content-Disposition", 'attachment; filename="%s-%s"'
-                                % (match.group(1), match.group(2))))
+                                % (match.group(1), match.group(2).replace("/", "-"))))
             with open(full, "rb") as f:
                 return self._send(200, ctype, f.read(), headers)
         raise ApiError(404, "no such page")
@@ -966,6 +978,40 @@ def make_server(studio, port=DEFAULT_PORT):
 
 
 ASPECTS = ("crop", "pad")  # how a picture whose shape differs from the frame is fitted (see stillmove.render)
+
+
+def _single_state(code, err, clip_dir, has_ffmpeg):
+    has_mp4 = os.path.isfile(os.path.join(clip_dir, "preview.mp4"))
+    has_gif = os.path.isfile(os.path.join(clip_dir, "preview.gif"))
+    if code == 0 and has_mp4:
+        return ("done", "clip ready")
+    if code == 0 and has_gif and not has_ffmpeg:
+        return ("done", "clip ready as a GIF: install ffmpeg to get an MP4")
+    if code == 0:
+        return ("error", "the render finished but wrote no preview.mp4 or preview.gif")
+    return ("error", err or "the render failed (status %s)" % code)
+
+
+def _every_state(code, err, clip_dir):
+    if code != 0:
+        return ("error", err or "the render failed (status %s)" % code)
+    files = every_files(os.path.basename(clip_dir), clip_dir)
+    if len(files) != len(EVERY_SIZES) or not os.path.isfile(os.path.join(clip_dir, "sizes.zip")):
+        return ("error", "the render finished but did not write a preview for every size and sizes.zip")
+    return ("done", "clip ready")
+
+
+def every_files(clip, clip_dir):
+    """One row per size that has a preview: its id and the URLs of the MP4 and GIF that exist."""
+    rows = []
+    for size in EVERY_SIZES:
+        row = {"size": size, "mp4": None, "gif": None}
+        for kind in ("mp4", "gif"):
+            if os.path.isfile(os.path.join(clip_dir, size, "preview." + kind)):
+                row[kind] = "/clips/%s/%s/preview.%s" % (clip, size, kind)
+        if row["mp4"] or row["gif"]:
+            rows.append(row)
+    return rows
 
 
 def promo_command(render_python, plan_path, clip_dir, layers, mp4=True, aspect="crop"):

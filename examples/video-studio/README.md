@@ -116,7 +116,8 @@ http://127.0.0.1:8820/:
 
     python3 -m makeclip --port 8820
 
-Make a clip renders one picture with a camera move. Make a promo renders several shots and joins
+Make a clip renders one picture with a camera move. Choose "Every size" to get the square, wide and
+vertical versions in one render, each with its own download and a zip of all three. Make a promo renders several shots and joins
 them, and can load a plan file. Pictures come from `~/Pictures/stillmove-input/`; clips go to a new
 folder under `~/Pictures/stillmove-output/`. The server binds 127.0.0.1 only.
 

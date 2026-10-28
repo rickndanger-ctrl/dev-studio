@@ -109,7 +109,14 @@ def wait_for_200(url, timeout=20.0):
 
 
 def check_render_folder(test, folder):
-    """A render writes manifest.json (valid JSON) and preview.gif (non-empty); no pixel checks."""
+    """A render writes manifest.json (valid JSON) and preview.gif (non-empty); no pixel checks.
+
+    A --sizes render writes one such folder per size, and a sizes.zip beside them."""
+    if os.path.isfile(os.path.join(folder, "sizes.zip")):
+        test.assertGreater(os.path.getsize(os.path.join(folder, "sizes.zip")), 0)
+        for size in ("square", "wide", "vertical"):
+            check_render_folder(test, os.path.join(folder, size))
+        return
     with open(os.path.join(folder, "manifest.json"), encoding="utf-8") as f:
         test.assertIn("frames", json.load(f))
     test.assertGreater(os.path.getsize(os.path.join(folder, "preview.gif")), 0)

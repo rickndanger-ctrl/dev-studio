@@ -92,3 +92,18 @@ def from_preset(preset_id, seconds, fps, width, height):
     frames = path(matches[0], duration_s=seconds, fps=fps)
     doc = to_json(frames, width=width, height=height, fps=fps)
     return _from_document(doc)
+
+
+def retarget(cams, width, height):
+    """The same poses and vertical fov at width x height: square pixels (fx = fy), principal point at the centre.
+
+    The vertical field of view is kept exactly: fy scales with the height, so fy * height stays the same ratio.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError("retarget size must be positive")
+    frames = []
+    for frame in cams.frames:
+        fy = float(frame.K[1][1]) * height / cams.height
+        k = np.array([[fy, 0.0, width / 2.0], [0.0, fy, height / 2.0], [0.0, 0.0, 1.0]])
+        frames.append(Frame(t=frame.t, K=k, w2c=frame.w2c))
+    return Cameras(fps=cams.fps, width=width, height=height, frames=frames)

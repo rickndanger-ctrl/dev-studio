@@ -29,11 +29,13 @@ ASPECT_MODES = ("crop", "pad")
 ASPECT_TOLERANCE = 0.01  # warn when the picture's aspect differs from the camera's by more than 1%
 
 
-def load_picture(path, width, height, aspect="crop"):
+def load_picture(path, width, height, aspect="crop", center=None):
     """(RGB uint8 array of width x height, aspect record) for the picture at path.
 
     crop (the default) scales the picture to cover the frame and cuts the overflow from the centre, so
-    nothing is stretched. pad scales it to fit inside and fills the border with the picture's edge colour.
+    nothing is stretched. center (x, y) in source pixels moves that cut so the point lands in the middle
+    of the frame, clamped to the picture; None means the picture's middle. pad scales it to fit inside
+    and fills the border with the picture's edge colour.
     The record is {"mode", "source": [w, h], "target": [w, h]}; one warning goes to stderr when the
     aspects differ by more than ASPECT_TOLERANCE.
     """
@@ -54,6 +56,10 @@ def load_picture(path, width, height, aspect="crop"):
         nw, nh = max(width, round(sw * scale)), max(height, round(sh * scale))
         img = img.resize((nw, nh), Image.LANCZOS)
         left, top = (nw - width) // 2, (nh - height) // 2
+        if center is not None:
+            cx, cy = center[0] * nw / sw, center[1] * nh / sh
+            left = min(max(round(cx - width / 2), 0), nw - width)
+            top = min(max(round(cy - height / 2), 0), nh - height)
         img = img.crop((left, top, left + width, top + height))
         return np.asarray(img, dtype=np.uint8), record
     scale = min(width / sw, height / sh)
@@ -136,19 +142,34 @@ def render_frames(image, depth, cams, frames_dir, stats=None, alpha=None, fg_dep
     return len(cams.frames)
 
 
+def matte_center(image_path, matte):
+    """Centre [x, y] in source pixels of the matte's bounding box (alpha >= 0.5), or None if empty."""
+    with Image.open(image_path) as img:
+        rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    mask = np.asarray(matte.alpha(rgb)) >= 0.5
+    if not mask.any():
+        return None
+    rows, cols = np.nonzero(mask)
+    return [(cols.min() + cols.max() + 1) / 2.0, (rows.min() + rows.max() + 1) / 2.0]
+
+
 def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=None, fg_depth=None,
-           fit_margin=None, aspect="crop"):
+           fit_margin=None, aspect="crop", center=None):
     """Render image_path along cams with backend's depth. Returns the manifest dict.
 
     With a matte (an object with name and alpha(rgb)), frames are layered (see render_frames).
     fit_margin None renders the camera as given; a margin shortens the move so the subject stays that
     far inside the frame (stillmove.fitting), and the manifest's fit field says by how much.
     aspect is 'crop' (fill the frame, centred) or 'pad' (borders); the manifest's aspect field records it.
+    center (x, y) in source pixels is the point a crop keeps in the middle (None: the picture's middle);
+    the manifest's crop_center records the point used, in source pixels.
     """
     if not cams.frames:
         raise ValueError("the camera path has no frames")
     started = time.perf_counter()
-    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect)
+    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect, center=center)
+    sw, sh = aspect_record["source"]
+    crop_center = list(center) if center is not None else [sw / 2.0, sh / 2.0]
     depth_started = time.perf_counter()
     depth = check_depth(backend.depth(image), image.shape[:2])
     depth_seconds = time.perf_counter() - depth_started
@@ -189,6 +210,7 @@ def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=Non
         "height": cams.height,
         "fit": fit_out.get("fit"),
         "aspect": aspect_record,
+        "crop_center": [float(crop_center[0]), float(crop_center[1])],
     }
     if note:
         manifest["note"] = note
