@@ -8,7 +8,7 @@
 
 Per machine: {"online", "project", "agents": [{name, status}], "routes": [last 5 route rows],
 "commits": [{hash, subject, files}], "teams": [one snapshot per studio team]}. A team snapshot is
-{"team", "kind", "idle", "agents", "routes" (its last 5 route rows), "commits" (of the repos its agents work in)}.
+{"team", "kind", "idle", "agents", "routes" (its last 5 route rows), "commits" (on the branches its agents have checked out)}.
 Read-only. Runs on Python 3.8+ with the standard library (the Minis' system Python). The Minis get
 lib/studio_teams.py prepended to this script on stdin, so with --local it must not import re_studio_config.
 """
@@ -93,55 +93,71 @@ def agents(session):
     return [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in agent_rows(session)]
 
 
-def commits(repo):
+def commits(repo, ref="--all"):
+    """Commits of the last hour reachable from ref (default: every branch of the repo)."""
+    if not repo or not ref:
+        return []
     try:
-        r = subprocess.run(["git", "-C", repo, "log", "--all", "--since=1 hour ago", "--format=@@%h\t%s", "--name-only"],
+        r = subprocess.run(["git", "-C", repo, "log", ref, "--since=1 hour ago", "--format=@@%h\t%ct\t%s", "--name-only"],
                            capture_output=True, text=True, timeout=10)
     except Exception:
         return []
     out = []
     for ln in r.stdout.splitlines():
         if ln.startswith("@@"):
-            h, _, s = ln[2:].partition("\t")
-            out.append({"hash": h, "subject": s, "files": 0})
+            h, _, rest = ln[2:].partition("\t")
+            when, _, s = rest.partition("\t")
+            out.append({"hash": h, "subject": s, "files": 0, "t": int(when) if when.isdigit() else None, "paths": []})
         elif ln.strip() and out:
             out[-1]["files"] += 1
+            if len(out[-1]["paths"]) < 30:
+                out[-1]["paths"].append(ln.strip())
     return out
 
 
-def toplevel(cwd):
-    """The git repo an agent works in (a worktree counts as its own repo), or '' when it is not in one."""
-    if not cwd:
-        return ""
+def _git(cwd, *args):
     try:
-        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5)
     except Exception:
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def team_snapshots(rows, routes, fallback_repo=""):
-    """One snapshot per studio team: its agents, its last 5 route rows, and the commits of the repos its agents work in.
-    Teams in one repo share those commits. Without a repo for a team, the machine's project is used."""
+def head_of(cwd):
+    """(repo, ref) an agent works on: its checkout's top folder, and the branch it has checked out (the commit when
+    detached). ('', '') when the agent is not in a repo. A worktree is its own repo here."""
+    if not cwd:
+        return "", ""
+    top = _git(cwd, "rev-parse", "--show-toplevel")
+    if not top:
+        return "", ""
+    ref = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+    if ref == "HEAD":
+        ref = _git(cwd, "rev-parse", "HEAD")
+    return top, ref
+
+
+def team_snapshots(rows, routes):
+    """One snapshot per studio team: its agents, its last 5 route rows, and its commits: the last hour on the branch
+    each of its agents has checked out. A team sees only its own branches, so a commit by another team in the same
+    repo does not change this team's snapshot. An agent with no checkout contributes no commits."""
     cache = {}
 
-    def repo_commits(path):
-        if path not in cache:
-            cache[path] = commits(path)
-        return cache[path]
+    def ref_commits(repo, ref):
+        if (repo, ref) not in cache:
+            cache[(repo, ref)] = commits(repo, ref)
+        return cache[(repo, ref)]
 
     out = []
     for g in studio_teams.group(rows):
-        repos = []
+        heads = []
         for a in g["agents"]:
-            top = toplevel(a.get("cwd"))
-            if top and top not in repos:
-                repos.append(top)
-        if not repos and fallback_repo:
-            repos = [fallback_repo]
+            head = head_of(a.get("cwd"))
+            if head[0] and head not in heads:
+                heads.append(head)
         seen, team_commits = set(), []
-        for repo in repos:
-            for c in repo_commits(repo):
+        for repo, ref in heads:
+            for c in ref_commits(repo, ref):
                 if c["hash"] not in seen:
                     seen.add(c["hash"])
                     team_commits.append(c)
@@ -160,7 +176,7 @@ def local(session, is_laptop, dirs=None):
     return {"online": True, "project": os.path.basename(repo),
             "agents": [{"name": a.get("name"), "status": a.get("agent_status", "?")} for a in rows],
             "routes": routes[-5:], "commits": commits(repo) if repo else [],
-            "teams": team_snapshots(rows, routes, repo)}
+            "teams": team_snapshots(rows, routes)}
 
 
 def library_prelude(lib_src):

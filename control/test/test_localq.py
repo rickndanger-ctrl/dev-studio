@@ -29,7 +29,7 @@ class LocalqServerTest(unittest.TestCase):
                         self.assertLess(len(prompt), 900)
                         rc, out, err = self.cli("draft", kind, self.draft_input("sample input"))
                         self.assertEqual((rc, out), (0, "draft result\n"), err)
-                        jid = err.strip()
+                        jid = err.strip().split(" on ")[0]    # stderr is "<id> on <machine>"
                         job = self.load("lap", jid)
                         self.assertEqual((job["kind"], job["status"], job["reviewer"]), (kind, "done", "codex"))
                         self.assertIn(jid, self.cli("results", "--pending")[1])

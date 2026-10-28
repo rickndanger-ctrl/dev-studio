@@ -48,7 +48,7 @@ class TeamSnapshotTest(unittest.TestCase):
         self.snap = load_module("studio_snap_under_test", "bin/studio-snap.py")
 
     def test_one_snapshot_per_team_with_its_own_agents_and_routes(self):
-        teams = self.snap.team_snapshots(ROWS, ROUTES, fallback_repo="")
+        teams = self.snap.team_snapshots(ROWS, ROUTES)
         self.assertEqual([t["team"] for t in teams], ["team-alpha", "team-beta"])
         alpha, beta = teams
         self.assertEqual([a["name"] for a in alpha["agents"]], ["team-alpha-architect", "team-alpha-worker-1"])
@@ -58,7 +58,7 @@ class TeamSnapshotTest(unittest.TestCase):
         self.assertEqual([r["text"] for r in beta["routes"]], ["task"])
 
     def test_idle_means_no_agent_working_or_blocked(self):
-        alpha, beta = self.snap.team_snapshots(ROWS, ROUTES, fallback_repo="")
+        alpha, beta = self.snap.team_snapshots(ROWS, ROUTES)
         self.assertFalse(alpha["idle"])     # its architect is working
         self.assertFalse(beta["idle"])      # its worker is blocked
 
@@ -66,21 +66,39 @@ class TeamSnapshotTest(unittest.TestCase):
         names = [a["name"] for t in self.snap.team_snapshots(ROWS, ROUTES) for a in t["agents"]]
         self.assertNotIn("helper-without-a-role", names)
 
-    def test_commits_come_from_the_team_repo_or_the_machine_project(self):
-        seen = []
-        with mock.patch.object(self.snap, "commits", side_effect=lambda repo: seen.append(repo) or [{"hash": repo}]):
-            with mock.patch.object(self.snap, "toplevel", side_effect=lambda cwd: "/repo/" + cwd.rsplit("/", 1)[-1]):
-                teams = self.snap.team_snapshots(ROWS, ROUTES, fallback_repo="/repo/project")
-        self.assertEqual([c["hash"] for c in teams[0]["commits"]], ["/repo/alpha"])
-        self.assertEqual([c["hash"] for c in teams[1]["commits"]], ["/repo/beta"])
-        self.assertEqual(sorted(set(seen)), ["/repo/alpha", "/repo/beta"])
+    def fake_git(self, branches):
+        """head_of and commits answered from a fixture: each cwd is on a branch, each branch has commits."""
+        heads = {"/nowhere/alpha": ("/repo", "alpha-branch"), "/nowhere/beta": ("/repo", "beta-branch")}
+        return (mock.patch.object(self.snap, "head_of", side_effect=lambda cwd: heads.get(cwd, ("", ""))),
+                mock.patch.object(self.snap, "commits", side_effect=lambda repo, ref: branches.get(ref, [])))
 
-    def test_a_team_with_no_repo_falls_back_to_the_machine_project(self):
-        with mock.patch.object(self.snap, "toplevel", return_value=""), \
-                mock.patch.object(self.snap, "commits", return_value=[{"hash": "abc"}]) as commits:
-            teams = self.snap.team_snapshots(ROWS, ROUTES, fallback_repo="/repo/project")
-        commits.assert_called_with("/repo/project")
-        self.assertEqual([c["hash"] for c in teams[0]["commits"]], ["abc"])
+    def test_each_team_lists_the_commits_of_its_own_branch(self):
+        branches = {"alpha-branch": [{"hash": "a1"}], "beta-branch": [{"hash": "b1"}]}
+        head, commits = self.fake_git(branches)
+        with head, commits as seen:
+            teams = self.snap.team_snapshots(ROWS, ROUTES)
+        self.assertEqual([c["hash"] for c in teams[0]["commits"]], ["a1"])
+        self.assertEqual([c["hash"] for c in teams[1]["commits"]], ["b1"])
+        self.assertEqual(sorted({call.args[1] for call in seen.call_args_list}), ["alpha-branch", "beta-branch"])
+
+    def test_a_claude_team_commit_does_not_change_the_codex_team(self):
+        before = {"alpha-branch": [{"hash": "a1"}], "beta-branch": [{"hash": "b1"}]}
+        after = {"alpha-branch": [{"hash": "a2"}, {"hash": "a1"}], "beta-branch": [{"hash": "b1"}]}
+        head, commits = self.fake_git(before)
+        with head, commits:
+            codex_before = self.snap.team_snapshots(ROWS, ROUTES)[1]["commits"]
+        head, commits = self.fake_git(after)
+        with head, commits:
+            teams = self.snap.team_snapshots(ROWS, ROUTES)
+        self.assertEqual(teams[1]["commits"], codex_before)      # the codex team is unchanged: no model call
+        self.assertEqual([c["hash"] for c in teams[0]["commits"]], ["a2", "a1"])   # the claude team did change
+
+    def test_an_agent_with_no_checkout_contributes_no_commits(self):
+        heads = {"/nowhere/alpha": ("/repo", "alpha-branch")}     # beta's agents have no checkout here
+        with mock.patch.object(self.snap, "head_of", side_effect=lambda cwd: heads.get(cwd, ("", ""))), \
+                mock.patch.object(self.snap, "commits", return_value=[{"hash": "a1"}]):
+            teams = self.snap.team_snapshots(ROWS, ROUTES)
+        self.assertEqual(teams[1]["commits"], [])
 
 
 class MiniPreludeTest(unittest.TestCase):

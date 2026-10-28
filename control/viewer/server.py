@@ -15,6 +15,7 @@ import glob, hashlib, re, http.server, json, os, queue, shlex, socketserver, sub
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 import re_studio_config as cfg
+import localq_report
 import localq_share
 import studio_teams
 
@@ -369,7 +370,8 @@ def laptop_loop():
                 studios = [dict(s, id=k) for k, s in studios.items() if isinstance(s, dict)]
             # Only the small fields: the reviewer's snapshots carry agents, routes and commits too.
             studios = [{k: s.get(k) for k in ("id", "label", "status", "summary", "concern")} for s in studios if isinstance(s, dict)]
-            lap["auditor"] = {} if AUDIT is None else {"status": v.get("status", "idle"), "summary": v.get("summary", ""), "flags": aud.get("flags", []),
+            stats_line = localq_report.auditor_line(load(STATE + "/audit-stats.json", {}) or {}, time.strftime("%Y-%m-%d")) if AUDIT else ""
+            lap["auditor"] = {} if AUDIT is None else {"stats_line": stats_line, "status": v.get("status", "idle"), "summary": v.get("summary", ""), "flags": aud.get("flags", []),
                               "studio_worst": sw, "studios": studios}
             if haiku_at is not None and aud.get("haiku_at") and aud.get("haiku_at") != haiku_at:
                 emit("lap.haiku", "claude", f'{LABELS["lap.haiku"]} → Claude: {v.get("summary", "")}' + (f' Concern: {v.get("concern")}' if v.get("concern") else ""), "alert" if v.get("needs_claude") else "audit")

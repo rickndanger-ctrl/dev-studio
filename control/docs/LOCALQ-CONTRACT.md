@@ -111,3 +111,22 @@ the command. `localq_share.paid_today` gains an optional `since` (unix time) so 
 Owners: `brief` + `docstrings` kinds in `bin/localq` + tests → worker-1. `lib/localq_report.py`, `localq_share` `since`,
 the `report` wiring + tests → main, with every docstring drafted by `localq draft docstrings` and reviewed by Codex.
 `docs/LOCAL-WORK.md` (brief, docstrings, report) + `test/ci.sh` on every merge → worker-2. This file → architect.
+
+## Mini first for small drafts (job mini-drafter)
+
+`localq draft <kind>` tries machines in order and uses the first one that can take the job:
+
+- Config: `draft_machines` (ordered machine ids, default `["lap"]`; the owner sets e.g. `["m2", "lap"]`) and
+  `draft_small_kinds` (default `["commit", "status", "changelog", "testcases", "review-notes"]`). Other kinds
+  (`brief`, `docstrings`) go to the hub only: they are long and the 9B is slow per character.
+- For each machine in order: a Mini is skipped at once, without SSH, when it has no valid approval; otherwise the full
+  gate runs. The first machine whose gate passes runs the job. A runner error there (timeout, the CLI refusing) marks
+  that job `failed` with the reason, and the draft moves on to the next machine with a new job id. Blocked machines
+  get no job file (a draft never leaves a queued job behind).
+- stderr names the job id and the machine (`<id> on m2`); stdout is the result text only, as before. Exit 0 on done,
+  2 when every machine was blocked (stderr lists each reason), 1 on a refused job or when every runnable machine failed.
+- Each machine keeps its own lock; a draft never waits on a Mini lock (busy = skip to the next machine).
+- Tests use `LOCALQ_FAKE_GATE` and a fake runner; none touches a Mini.
+
+Owners: `bin/localq` draft order + tests → worker-1 (unit tests only). `docs/LOCAL-WORK.md` "Draft first" update,
+full `test/ci.sh`, and one real smoke draft while the owner's Mini 2 window is open → worker-2. This section → architect.

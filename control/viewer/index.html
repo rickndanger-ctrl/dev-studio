@@ -255,11 +255,11 @@ function render() {
   } else if (sw) {
     // Worst studio: progressing = green, idle = dim, anything else = alert.
     const color = sw.status === "progressing" ? css("--haiku") : sw.status === "idle" ? css("--dim") : css("--alert");
-    const tip = (aud.studios || []).map(s => `${s.label || s.id}: ${s.status || "?"} · ${s.summary || ""}`).join("\n");
+    const tip = [...(aud.studios || []).map(s => `${s.label || s.id}: ${s.status || "?"} · ${s.summary || ""}`), aud.stats_line || ""].filter(Boolean).join("\n");
     node(nodes, pos["lap.haiku"], 18, color, lbl("lap.haiku", "Auditor"), clip(`${sw.label || sw.id}: ${sw.summary || ""}`, 18), false, null, tip || undefined);
   } else {
     node(nodes, pos["lap.haiku"], 18, aud.status === "progressing" ? css("--haiku") : aud.status === "idle" ? css("--dim") : css("--alert"),
-         lbl("lap.haiku", "Auditor"), aud.status || "idle", false);
+         lbl("lap.haiku", "Auditor"), aud.status || "idle", false, null, aud.stats_line || undefined);
   }
   el("text", { x: lp.x + 16, y: lp.y + 408, class: "panel-sub" }, nodes, `${appName().toUpperCase()} · local models`);
   let ty = lp.y + 516;

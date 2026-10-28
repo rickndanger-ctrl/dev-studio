@@ -86,6 +86,8 @@ Top-level keys:
 | `model_health_port` | `18081` | Port of the local model health check. |
 | `state_dir` | `<repo>/state` | Where the viewer, auditor and localq keep their files. |
 | `labels` | generic names | `{node id: display name}`, e.g. `{"lap.model": "Local model"}`; node ids are `lap.model`, `lap.member`, `lap.haiku`. |
+| `audit_local_timeout` | `150` | Seconds one local-model audit ask may take. A missing, bad or non-positive value falls back to 150. Each ask is logged to `audit.log` with its time and this limit. |
+| `audit_sample` | `0.1` | Share (0 to 1) of valid local audit verdicts that Haiku also checks as a quality sample. A bad value falls back to 0.1. Each sampled pair is appended to `audit-samples.jsonl` in the state folder. |
 | `studio_dirs` | `["~/DevStudio"]` | Folders searched for a studio on a remote machine; a machine's own `project` is tried first. |
 | `studio_folder_names` | `["DevStudio", "worker-1", "worker-2", "worker-3"]` | Folder names that mark an agent as a studio agent. |
 | `remote_path` | `"$HOME/.local/bin:/opt/homebrew/bin"` | PATH prefix on remote machines. |

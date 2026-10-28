@@ -403,7 +403,8 @@ class LocalqTest(unittest.TestCase):
                 rc, out, err = self.cli("draft", kind, self.draft_input(), "--max-chars", "123")
                 self.assertEqual(rc, 0, err)
                 self.assertEqual(out, f"answer {number}\n")
-                jid = err.strip()
+                jid, machine = err.strip().split(" on ")
+                self.assertEqual(machine, "lap")
                 job = self.load("lap", jid)
                 self.assertEqual((job["kind"], job["status"], job["reviewer"]), (kind, "done", "codex"))
                 self.assertEqual(job["prompt"], prompt)
@@ -422,9 +423,8 @@ class LocalqTest(unittest.TestCase):
         self.cli("add", "lap", self.job("waiting"))
         rc, out, err = self.cli("draft", "commit", self.draft_input())
         self.assertEqual((rc, out), (2, ""))
-        jid = err.splitlines()[0]
         self.assertIn("memory low", err)
-        self.assertEqual(self.load("lap", jid)["status"], "blocked")
+        self.assertEqual([j["id"] for j in CLI.all_jobs()], ["waiting"])
         self.assertEqual(self.load("lap", "waiting")["status"], "queued")
         self.assertEqual(self.calls, [])
 
@@ -434,7 +434,7 @@ class LocalqTest(unittest.TestCase):
             rc, out, err = self.cli("draft", "commit", self.draft_input())
         self.assertEqual((rc, out), (1, ""))
         self.assertIn("model refused", err)
-        self.assertEqual(self.load("lap", err.splitlines()[0])["status"], "failed")
+        self.assertEqual(self.load("lap", err.splitlines()[0].split(" on ")[0])["status"], "failed")
 
     def test_draft_refuses_bad_inputs_and_options_without_a_job(self):
         path = self.draft_input(" ")
@@ -460,7 +460,7 @@ class LocalqTest(unittest.TestCase):
     def test_draft_refuses_a_busy_laptop_without_creating_a_job(self):
         CLI.take_lock("lap")
         rc, out, err = self.cli("draft", "commit", self.draft_input())
-        self.assertEqual((rc, out), (1, ""))
+        self.assertEqual((rc, out), (2, ""))
         self.assertIn("already going", err)
         self.assertEqual(CLI.all_jobs(), [])
         self.assertTrue(os.path.exists(CLI.lock_path("lap")))
@@ -470,6 +470,114 @@ class LocalqTest(unittest.TestCase):
         for kind in ("commit", "changelog", "status", "brief", "docstrings"):
             self.assertEqual(self.cli("add", "lap", self.job(kind, kind=kind))[0], 0)
 
+    def draft_config(self, **settings):
+        with open(self.conf) as f:
+            conf = json.load(f)
+        conf.update(settings)
+        with open(self.conf, "w") as f:
+            json.dump(conf, f)
+
+    def test_small_draft_uses_first_approved_mini(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        rc, out, err = self.cli("draft", "status", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 1\n"), err)
+        jid, mid = err.strip().split(" on ")
+        self.assertEqual(mid, "m1")
+        self.assertEqual(self.load("m1", jid)["status"], "done")
+        self.assertEqual([c["mid"] for c in self.calls], ["m1"])
+        self.assertIn(jid, self.cli("results", "--pending")[1])
+
+    def test_unapproved_mini_skips_gate_and_uses_laptop(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        with mock.patch.object(self.gate, "check", wraps=self.gate.check) as check:
+            rc, out, err = self.cli("draft", "commit", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 1\n"), err)
+        self.assertEqual([c.args[0] for c in check.call_args_list], ["lap"])
+        self.assertIn(" on lap", err)
+        self.assertEqual([j["machine"] for j in CLI.all_jobs()], ["lap"])
+
+    def test_blocked_mini_falls_back_without_a_job(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(False, "app running"), lap=(True, ""))
+        rc, out, err = self.cli("draft", "testcases", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 1\n"), err)
+        self.assertEqual([j["machine"] for j in CLI.all_jobs()], ["lap"])
+
+    def test_runner_failure_is_recorded_then_laptop_runs_new_job(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        with mock.patch.dict(sys.modules, {"localq_models": stub_models(self.calls, self.events, fail=(1,))}):
+            rc, out, err = self.cli("draft", "commit", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 2\n"), err)
+        jobs = {j["machine"]: j for j in CLI.all_jobs()}
+        self.assertEqual((jobs["m1"]["status"], jobs["lap"]["status"]), ("failed", "done"))
+        self.assertNotEqual(jobs["m1"]["id"], jobs["lap"]["id"])
+        self.assertIn("model refused", jobs["m1"]["reason"])
+        self.assertIn(" on m1", err)
+        self.assertIn(" on lap", err)
+
+    def test_all_blocked_lists_every_reason_without_jobs(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(False, "app running"), lap=(False, "memory low"))
+        rc, out, err = self.cli("draft", "status", self.draft_input())
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("m1: app running", err)
+        self.assertIn("lap: memory low", err)
+        self.assertEqual(CLI.all_jobs(), [])
+
+    def test_all_runnable_fail_exit_one_even_if_another_is_blocked(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(False, "memory low"))
+        with mock.patch.dict(sys.modules, {"localq_models": stub_models(self.calls, self.events, fail=(1,))}):
+            rc, out, err = self.cli("draft", "status", self.draft_input())
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("memory low", err)
+        self.assertEqual([j["status"] for j in CLI.all_jobs()], ["failed"])
+
+    def test_long_kind_uses_hub_despite_mini_first(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        for kind in ("brief", "docstrings"):
+            with self.subTest(kind=kind):
+                rc, _, err = self.cli("draft", kind, self.draft_input())
+                self.assertEqual(rc, 0, err)
+                self.assertIn(" on lap", err)
+        self.assertEqual([c["mid"] for c in self.calls], ["lap", "lap"])
+
+    def test_busy_mini_is_skipped_and_laptop_runs(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        CLI.take_lock("m1")
+        rc, out, err = self.cli("draft", "status", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 1\n"), err)
+        self.assertTrue(os.path.exists(CLI.lock_path("m1")))
+        self.assertEqual([c["mid"] for c in self.calls], ["lap"])
+
+    def test_approval_expiring_after_gate_does_not_leave_a_blocked_job(self):
+        self.draft_config(draft_machines=["m1", "lap"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        with mock.patch.object(self.gate, "approval", side_effect=[{"until": time.time() + 1}, None]):
+            rc, out, err = self.cli("draft", "status", self.draft_input())
+        self.assertEqual((rc, out), (0, "answer 1\n"), err)
+        self.assertEqual([j["machine"] for j in CLI.all_jobs()], ["lap"])
+
+    def test_custom_small_kinds_control_routing(self):
+        self.draft_config(draft_machines=["m1", "lap"], draft_small_kinds=["status"])
+        self.gate.allow("m1", 1, "tester")
+        self.fake_gate(m1=(True, ""), lap=(True, ""))
+        rc, _, err = self.cli("draft", "commit", self.draft_input())
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.calls[0]["mid"], "lap")
 
 
 if __name__ == "__main__":

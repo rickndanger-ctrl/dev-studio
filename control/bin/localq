@@ -2,7 +2,7 @@
 """localq: a queue of small jobs for the local models, with a gate in front and a review behind.
 
   localq add <machine> <job.json>        queue a job (prompt + inputs under 6 KB, a known kind, a new id)
-  localq draft <kind> <input-file> [--max-chars N]  run one laptop draft and print its result
+  localq draft <kind> <input-file> [--max-chars N]  run one draft and print its result
     kinds: commit, testcases, review-notes, changelog, status, brief, docstrings
   localq allow <m1|m2> <hours>           approve local work on a Mini for a while
   localq deny <m1|m2>                    take that approval back
@@ -42,6 +42,7 @@ KINDS = ("draft", "summarize", "describe", "testcases", "review-notes", "commit"
 VERDICTS = ("accept", "fix", "reject")
 MAX_INPUT = 6144
 DEFAULT_MAX_CHARS = 4000
+DEFAULT_DRAFT_SMALL_KINDS = ["commit", "status", "changelog", "testcases", "review-notes"]
 ID_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 STAT_KEYS = ("jobs", "chars_in", "chars_out", "seconds", "accepted", "fixed", "rejected")
 VERDICT_KEY = {"accept": "accepted", "fix": "fixed", "reject": "rejected"}
@@ -293,7 +294,7 @@ def take_lock(mid):
             raise Refused(f"a run on {mid} is already going (pid {pid})")
 
 
-def cmd_run(args, only=None, quiet=False, locked=False):
+def cmd_run(args, only=None, quiet=False, locked=False, checked=False):
     if len(args) != 1:
         raise Refused("usage: localq run <machine>")
     mid = args[0]
@@ -305,7 +306,7 @@ def cmd_run(args, only=None, quiet=False, locked=False):
     if not todo:
         print(f"nothing queued on {mid}")
         return 0
-    ok, reason = gate().check(mid)                     # the gate comes first: nothing below runs when it says no
+    ok, reason = (True, "") if checked else gate().check(mid)  # drafts check before creating a job
     if not ok:
         for j in todo:
             j.update(status="blocked", reason=reason)
@@ -373,30 +374,66 @@ def cmd_draft(args):
         raise Refused(f"cannot read input file {path}: {e}")
     if not inputs.strip():
         raise Refused("input file must contain text")
+    if len(DRAFT_PROMPTS[kind]) + len(inputs) > MAX_INPUT:
+        raise Refused(f"prompt + inputs are {len(DRAFT_PROMPTS[kind]) + len(inputs)} characters; the limit is {MAX_INPUT}")
     if machine("lap").get("role") != "hub":
         raise Refused("lap must be the laptop hub")
-    take_lock("lap")
-    try:
-        jid = f"{kind}-{uuid.uuid4().hex}"
-        job = create_job("lap", {"id": jid, "kind": kind, "prompt": DRAFT_PROMPTS[kind],
-                                 "inputs": inputs, "max_chars": max_chars, "reviewer": "codex"})
-        print(jid, file=sys.stderr)
-        rc = cmd_run(["lap"], only=jid, quiet=True, locked=True)
-        if rc == 3:
-            return 2
-        if rc:
-            return 1
+    small_kinds = cfg.get("draft_small_kinds", DEFAULT_DRAFT_SMALL_KINDS)
+    if not isinstance(small_kinds, list) or not all(isinstance(k, str) for k in small_kinds):
+        raise Refused("draft_small_kinds must be a list of kinds")
+    machines = cfg.get("draft_machines", ["lap"]) if kind in small_kinds else ["lap"]
+    if not isinstance(machines, list) or not machines or not all(isinstance(mid, str) and mid for mid in machines):
+        raise Refused("draft_machines must be a non-empty list of machine ids")
+    reasons, failed = [], False
+    for mid in machines:
         try:
-            with open(job["output"], encoding="utf-8") as f:
-                sys.stdout.write(f.read())
-        except OSError as e:
-            raise Refused(f"cannot read result for {jid}: {e}")
-        return 0
-    finally:
+            m = machine(mid)
+        except Refused as e:
+            reasons.append(f"{mid}: {e}")
+            continue
+        if m.get("role") != "hub" and not gate().approval(mid):
+            reasons.append(f"{mid}: no valid approval")
+            continue
         try:
-            os.unlink(lock_path("lap"))
-        except OSError:
-            pass
+            take_lock(mid)
+        except Refused as e:
+            reasons.append(f"{mid}: {e}")
+            continue
+        job = None
+        try:
+            ok, reason = gate().check(mid)
+            if not ok:
+                reasons.append(f"{mid}: {reason}")
+                continue
+            jid = f"{kind}-{uuid.uuid4().hex}"
+            job = create_job(mid, {"id": jid, "kind": kind, "prompt": DRAFT_PROMPTS[kind],
+                                   "inputs": inputs, "max_chars": max_chars, "reviewer": "codex"})
+            print(f"{jid} on {mid}", file=sys.stderr)
+            rc = cmd_run([mid], only=jid, quiet=True, locked=True, checked=True)
+            if rc == 3:
+                reasons.append(f"{mid}: {find_job(jid).get('reason', 'blocked')}")
+                continue
+            if rc:
+                failed = True
+                continue
+            try:
+                with open(job["output"], encoding="utf-8") as f:
+                    sys.stdout.write(f.read())
+            except OSError as e:
+                raise Refused(f"cannot read result for {jid}: {e}")
+            return 0
+        finally:
+            if job:
+                current = find_job(job["id"])
+                if current and current.get("status") in ("queued", "blocked"):
+                    os.unlink(os.path.join(jobs_dir(mid), job["id"] + ".json"))
+            try:
+                os.unlink(lock_path(mid))
+            except OSError:
+                pass
+    for reason in reasons:
+        print(f"blocked: {reason}", file=sys.stderr)
+    return 1 if failed else 2
 
 
 # ---------- results / review / stats ----------
@@ -521,7 +558,8 @@ def cmd_report(args):
     else:
         raise Refused(usage)
     paid = localq_share.paid_today(today(), localq_share.mail_dir(), since)
-    report = localq_report.build(all_jobs(), paid, since)
+    stats = read_json(os.path.join(cfg.state_dir(), "audit-stats.json"), {}) or {}
+    report = localq_report.build(all_jobs(), paid, since, localq_report.auditor_block(stats, since))
     print(json.dumps(report, indent=2) if as_json else localq_report.render(report))
 
 

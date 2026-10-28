@@ -27,6 +27,8 @@ if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "lib"))
 import re_studio_config as cfg
+import audit_review
+import audit_facts
 
 AUDIT = cfg.audit()
 DATA = os.path.expanduser(AUDIT["data_dir"]) if AUDIT else ""
@@ -39,6 +41,37 @@ STALL_AFTER = 900      # seconds with no new step before a run counts as stalled
 OLD_AFTER = 7200       # a Room task idle this long is old news and must not drive the verdict
 STUDIO_STATUS = ("progressing", "idle", "stalled", "looping", "off-scope", "unreachable")
 SEVERITY = {"off-scope": 4, "looping": 3, "stalled": 2, "progressing": 1, "idle": 0}   # unreachable only if all are
+
+STATS_FILE = os.path.join(STATE, "audit-stats.json")
+LOCAL_MAX_CHARS = 1200   # the local model answers with one small JSON object
+
+
+def local_timeout():
+    """Seconds one local ask may take: audit_local_timeout in the machine config, default 150 (a draft can share the model)."""
+    try:
+        value = float(cfg.get("audit_local_timeout", 150))
+    except (TypeError, ValueError):
+        return 150
+    return value if value > 0 else 150
+
+
+def sample_rate():
+    """Share of valid local verdicts that Haiku also checks: audit_sample in the machine config, default 0.1 (0 to 1)."""
+    try:
+        value = float(cfg.get("audit_sample", 0.1))
+    except (TypeError, ValueError):
+        return 0.1
+    return value if 0 <= value <= 1 else 0.1
+
+
+LOCAL_TIMEOUT = local_timeout()
+SAMPLE = sample_rate()
+LAPTOP_STATUS = ("progressing", "slow", "stuck", "looping", "done", "failed")
+LAPTOP_KEYS = ("status", "summary", "concern", "needs_claude", "next_check_minutes")
+STUDIO_KEYS = ("status", "summary", "concern", "needs_claude")
+STATS = {}       # this pass's counters (audit_review stats), saved at the end of the pass
+GATE = []        # the local gate's answer for this pass, filled on the first ask: [(ok, reason)]
+PASS = {"asked": 0, "reachable": 0}   # this pass's studio asks and reachable teams; the rest were skipped
 
 os.makedirs(STATE, exist_ok=True)
 
@@ -294,6 +327,62 @@ def flags(snap, prev):
     return out
 
 
+def claude_json(prompt):
+    """One Haiku verdict through the claude CLI, parsed from its JSON envelope, with the reported cost added."""
+    out = subprocess.run(
+        ["claude", "-p", "--model", HAIKU, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+         "--no-session-persistence", "--output-format", "json", prompt],
+        capture_output=True, text=True, timeout=180, cwd=STATE)
+    result = json.loads(out.stdout)
+    text = result.get("result", "")   # the verdict is a JSON string nested under "result"
+    verdict = json.loads(text[text.find("{"): text.rfind("}") + 1])
+    verdict["cost_usd"] = result.get("total_cost_usd")
+    return verdict
+
+
+def local_text(prompt):
+    """The laptop's local model, behind one gate check per pass. A closed gate raises, which review() counts as a fallback."""
+    if not GATE:
+        import localq_gate
+        GATE.append(localq_gate.check("lap"))
+    ok, reason = GATE[0]
+    if not ok:
+        raise RuntimeError(f"gate: {reason}")
+    import localq_models
+    started = time.monotonic()
+    outcome = "failed"
+    try:
+        text = localq_models.run("lap", prompt, LOCAL_MAX_CHARS, timeout=LOCAL_TIMEOUT)["text"]
+        outcome = "ok"
+        return text
+    finally:
+        append("audit.log", f"{now()} local ask {outcome} {time.monotonic() - started:.1f}s (limit {LOCAL_TIMEOUT:g}s)")
+
+
+SOURCE = {}      # key -> where its last verdict came from: local, local+sample, confirm, haiku-fallback
+STUDIO_ALERT = ("stalled", "looping", "off-scope")    # a local verdict in one of these states is confirmed by Haiku before it alerts
+
+
+def log_sample(key, prompt, local, haiku, kind="sample"):
+    """Append one local-vs-Haiku pair (kind sample or confirm) to state/audit-samples.jsonl (the local verdict is overwritten on a disagreement)."""
+    append("audit-samples.jsonl", json.dumps({"time": now(), "kind": kind, "key": key, "local": local, "haiku": haiku, "prompt_chars": len(prompt)}))
+
+
+def review(prompt, allowed, keys, key="laptop", haiku_prompt=None, local=None, confirm=()):
+    """Ask for a verdict: the local model first, Haiku as the fallback and as the sampled check (lib/audit_review).
+    key names what is judged (laptop, or a team key) in the logged pairs and in SOURCE. confirm: statuses Haiku must confirm."""
+    SOURCE.pop(key, None)
+    verdict, source = audit_review.review(prompt, allowed, keys, local or local_text, claude_json, sample=SAMPLE, stats=STATS,
+                                          haiku_prompt=haiku_prompt,
+                                          on_sample=lambda local, haiku: log_sample(key, prompt, local, haiku),
+                                          confirm=confirm,
+                                          on_confirm=lambda local, haiku: log_sample(key, prompt, local, haiku, kind="confirm"))
+    SOURCE[key] = source
+    if source != "haiku-fallback":
+        verdict.setdefault("cost_usd", 0)   # a local verdict is free; the key stays so the verdict has the same shape as before
+    return verdict
+
+
 def ask_haiku(snap, raised):
     prompt = (
         f"You audit a local AI model doing a task in {APP}. Judge from this snapshot only.\n"
@@ -306,15 +395,7 @@ def ask_haiku(snap, raised):
         f"Flags raised by code: {json.dumps(raised)}\n\nSnapshot:\n{json.dumps(snap, indent=1)[:12000]}"
     )
     try:
-        out = subprocess.run(
-            ["claude", "-p", "--model", HAIKU, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-             "--no-session-persistence", "--output-format", "json", prompt],
-            capture_output=True, text=True, timeout=180, cwd=STATE)
-        result = json.loads(out.stdout)
-        text = result.get("result", "")
-        verdict = json.loads(text[text.find("{"): text.rfind("}") + 1])
-        verdict["cost_usd"] = result.get("total_cost_usd")
-        return verdict
+        return review(prompt, LAPTOP_STATUS, LAPTOP_KEYS)
     except Exception as e:
         return {"status": "unknown", "summary": f"Haiku review failed: {e}", "concern": "", "needs_claude": bool(raised),
                 "next_check_minutes": 10}
@@ -328,33 +409,24 @@ def _load_snap():
     return mod
 
 
-def haiku_json(prompt):
-    out = subprocess.run(
-        ["claude", "-p", "--model", HAIKU, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-         "--no-session-persistence", "--output-format", "json", prompt],
-        capture_output=True, text=True, timeout=180, cwd=STATE)
-    text = json.loads(out.stdout).get("result", "")
-    return json.loads(text[text.find("{"): text.rfind("}") + 1])
-
-
 def ask_studio(sid, label, snap):
-    tasks = [r for r in (snap.get("routes") or []) if str(r.get("from", "")).endswith("architect")]
-    prompt = (
-        f"You audit one AI dev studio ({label}, project {snap.get('project')}): an architect plus workers that talk through a router.\n"
-        "Judge from this snapshot only. Reply with JSON only: {\"status\": \"progressing|idle|stalled|looping|off-scope\", "
-        "\"summary\": \"one sentence for Claude\", \"concern\": \"empty or one sentence\", \"needs_claude\": true|false}.\n"
-        "progressing = agents working and routes/commits moving; idle = nobody working, nothing pending; stalled = agents marked working "
-        "but no new routes or commits; looping = the same messages or fixes repeat; off-scope = commits clearly unrelated to every task and to the project.\n"
-        "Workers run in parallel, so commits answer different task messages, not just the newest one. Check each recent commit against ALL the "
-        "architect's task messages below: does it fit any of them? Use off-scope only when a commit clearly matches none of them and is also "
-        "unrelated to the project; a commit for an earlier, parallel or follow-up task is fine.\n"
-        "needs_claude is true only for stalled, looping or off-scope.\n"
-        f"Architect's task messages (architect -> anyone): {json.dumps(tasks)}\n\nSnapshot:\n{json.dumps(snap, indent=1)[:10000]}")
-    v = haiku_json(prompt)
+    """One team's verdict. Code derives the status from the facts (lib/audit_facts); the local model writes the summary only;
+    Haiku, when it is asked (sample, confirm, fallback), judges from the rules and its status is compared with the final one.
+    Off-scope exists only when plan["offscope"] is true, and then Haiku alone answers."""
+    plan = audit_facts.plan(label, snap)
+    PASS["asked"] += 1
+    if plan["offscope"]:    # only Haiku may call a team off-scope: it is asked directly with the rules prompt
+        SOURCE.pop(sid, None)
+        v, SOURCE[sid] = audit_review.ask_haiku_only(plan["haiku_prompt"], STUDIO_STATUS[:-1], STUDIO_KEYS, claude_json, stats=STATS)
+        return {"studio": sid, "status": v["status"], "summary": str(v.get("summary", "")), "concern": str(v.get("concern", "")),
+                "needs_claude": v["status"] in STUDIO_ALERT}
+    allowed = tuple(x for x in STUDIO_STATUS[:-1] if x != "off-scope")    # off-scope only through the plan["offscope"] path above: a sample, confirm or fallback answer may not emit it
+    v = review(plan["local_prompt"], allowed, STUDIO_KEYS, key=sid, haiku_prompt=plan["haiku_prompt"],
+               local=lambda p: audit_facts.fix_reply(local_text(p), plan), confirm=STUDIO_ALERT)
     if v.get("status") not in STUDIO_STATUS[:-1]:
         v["status"] = "idle"
     return {"studio": sid, "status": v["status"], "summary": str(v.get("summary", "")), "concern": str(v.get("concern", "")),
-            "needs_claude": bool(v.get("needs_claude")) and v["status"] in ("stalled", "looping", "off-scope")}
+            "needs_claude": bool(v.get("needs_claude")) and v["status"] in STUDIO_ALERT}
 
 
 def studio_units(snaps):
@@ -384,6 +456,7 @@ def studio_pass(prev):
         return prev.get("studios") or {}, prev.get("studio_worst"), prev.get("studio_alerted") or []
     before, studios = prev.get("studios") or {}, {}
     alerted = []
+    skipped = 0
     for sid, label, snap in studio_units(snaps):
         old = before.get(sid) or {}
         entry = {"label": label, "at": now()}
@@ -397,27 +470,32 @@ def studio_pass(prev):
         changed = sig != old.get("sig") or old.get("status") in (None, "unreachable")
         entry.update(agents=snap.get("agents", []), routes=snap.get("routes", []), commits=snap.get("commits", []), sig=sig,
                      changed_at=time.time() if changed else old.get("changed_at", time.time()), asked_at=old.get("asked_at"))
-        if changed:
+        # An unchanged team that was progressing, with agents still working, is asked again once STALL_AFTER has passed since its
+        # last change AND its last ask: the facts now say whether it stalled, and a stalled verdict is confirmed by Haiku like any other.
+        working = any(a.get("status") == "working" for a in snap.get("agents", []))
+        aged = (not changed and old.get("status") == "progressing" and working
+                and time.time() - entry["changed_at"] > STALL_AFTER and time.time() - (old.get("asked_at") or 0) > STALL_AFTER)
+        if changed or aged:
             try:
                 v = ask_studio(sid, entry["label"], snap)
                 entry.update(status=v["status"], summary=v["summary"], concern=v["concern"], needs_claude=v["needs_claude"], asked_at=time.time())
-                append("audit.log", f"{now()} haiku {sid}: {json.dumps(v)}")
+                append("audit.log", f"{now()} {SOURCE.get(sid, 'haiku')} {sid}: {json.dumps(v)}")
             except Exception as e:
                 entry.update(status=old.get("status", "idle") if old.get("status") != "unreachable" else "idle",
-                             summary=f"Haiku review failed: {e}", concern="", needs_claude=False)
+                             summary=f"Haiku review failed: {e}", concern="", needs_claude=False,
+                             sig=None)    # not remembered: the next pass sees the team as changed and asks again
         else:
+            skipped += 1    # unchanged since the last pass: no model call
             entry.update(status=old.get("status", "idle"), summary=old.get("summary", ""), concern=old.get("concern", ""),
                          needs_claude=old.get("needs_claude", False))
-            working = any(a.get("status") == "working" for a in snap.get("agents", []))
-            if entry["status"] == "progressing" and working and time.time() - entry["changed_at"] > STALL_AFTER:
-                entry.update(status="stalled", summary=f"Agents show working but nothing new for {int((time.time() - entry['changed_at']) // 60)} min.",
-                             concern="No new routes or commits.", needs_claude=True)
         studios[sid] = entry
         key = f"{sid}:{entry['status']}"
         if entry["needs_claude"]:
             alerted.append(key)
             if key not in (prev.get("studio_alerted") or []):    # once per problem: stays quiet until it clears
                 append("alerts.log", f"{now()} ALERT studio {entry['label']} {entry['status']}: {entry['summary']} {entry['concern']}")
+    if skipped:
+        append("audit.log", f"{now()} skipped {skipped} unchanged studio team(s), no model call")
     live = {k: v for k, v in studios.items() if v["status"] in SEVERITY}
     pool = live or studios
     worst = None
@@ -430,8 +508,23 @@ def studio_pass(prev):
 
 
 def one_pass():
+    """One audit pass, with the model-use counters (audit-stats.json) loaded before it and saved after it."""
+    STATS.clear()
+    STATS.update(load(STATS_FILE, {}) or {})
+    GATE.clear()
+    PASS.update(asked=0, reachable=0)
+    audit_review.bump(STATS, "passes")
+    try:
+        pass_body()
+    finally:
+        audit_review.bump(STATS, "skipped", max(0, PASS["reachable"] - PASS["asked"]))   # teams whose snapshot did not change
+        save(STATS_FILE, STATS)
+
+
+def pass_body():
     prev = load(os.path.join(STATE, "latest.json"), {}) or {}
     studios, worst, studio_alerted = studio_pass(prev)
+    PASS["reachable"] = sum(1 for e in studios.values() if e.get("status") != "unreachable")
     snap = snapshot()
     if "error" in snap:
         append("audit.log", f"{now()} {snap['error']}")
@@ -452,13 +545,15 @@ def one_pass():
     if new_flags or due:
         verdict = ask_haiku(snap, raised)
         haiku_at = time.time()
-        append("audit.log", f"{now()} haiku: {json.dumps(verdict)}")
+        append("audit.log", f"{now()} {SOURCE.get('laptop', 'haiku')}: {json.dumps(verdict)}")
         prev_status = (prev.get("verdict") or {}).get("status")
         changed_state = verdict.get("status") in ("done", "failed", "stuck", "looping") and verdict.get("status") != prev_status
         if new_flags or changed_state:
             alerted += new_flags
             append("alerts.log", f"{now()} ALERT {verdict.get('status')}: {verdict.get('summary')} "
                                  f"{verdict.get('concern', '')} flags={new_flags}")
+    else:
+        audit_review.bump(STATS, "skipped")   # the laptop task did not change enough to ask
     a = snap.get("active")
     append("audit.log", f"{now()} {'running ' + a['title'] + ' step ' + str(a['steps']) if a else 'idle'}"
                         f"{' changed' if changed else ''}{' flags=' + str(raised) if raised else ''}")

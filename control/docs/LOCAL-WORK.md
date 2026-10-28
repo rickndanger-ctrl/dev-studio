@@ -73,9 +73,21 @@ Workers draft these with `localq draft <kind> <input-file>`, then edit the resul
 <main-checkout>/bin/localq review <job-id> accept "<note>"       # or fix / reject, once you have checked it
 ```
 
-`localq draft` runs on the laptop only and passes through the same gate. A Mini still takes `localq add` + `localq run`
-and an approval. Then edit the output. Never commit or send a draft unedited: it is a starting point, and the teammate
-owns the final text.
+**Mini first for small drafts.** `localq draft` tries the machines in `draft_machines` in order (the owner sets it, for
+example `["m2", "lap"]`; the default is the laptop only) and uses the first one whose gate passes. A Mini counts only
+during an approved window: without one it is skipped at once. The small kinds (`commit`, `status`, `changelog`,
+`testcases`, `review-notes`) take this route. `brief` and `docstrings` always stay on the laptop, because they are long
+and the 9B model is slow per character.
+
+A runner error on a Mini (a timeout, or the CLI refusing while its app holds the model) marks that job `failed`, and the
+draft moves on to the next machine with a new job id. A blocked machine gets no job file.
+
+**Reading the stderr line.** `<id> on m2` means job `<id>` ran on m2; `<id> on lap` means the laptop. stdout is the
+result text only. Exit codes: 0 done; 2 every machine blocked (stderr lists each reason); 1 refused, or every runnable
+machine failed.
+
+Then edit the output. Never commit or send a draft unedited: it is a starting point, and the teammate owns the final
+text.
 
 **Briefs.** The architect writes the task as bullet notes (who, goal, files, checks), runs `localq draft brief`, and
 edits the result into the worker brief. The model's text is a starting point; the architect owns the final brief.
