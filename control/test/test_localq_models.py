@@ -215,6 +215,22 @@ class CliRunnerTest(ConfigTest):
         self.assertEqual(out["model"], "runner")
         self.assertNotIn("/", out["model"])
 
+    def test_the_cli_model_label_is_recorded_and_the_binary_name_is_the_fallback(self):
+        self.use_config([{"id": "m1", "role": "studio", "ssh": ["host-a"],
+                          "local_model": {"kind": "cli", "path": "/fake/runner", "args": [], "model": " Fake-Model-9B "}},
+                         {"id": "m2", "role": "studio", "ssh": ["host-b"],
+                          "local_model": {"kind": "cli", "path": "/fake/runner", "args": [], "model": ""}}])
+        run, _ = self.fake_run([(0, "a", ""), (0, "b", "")])
+        with mock.patch.object(lm.subprocess, "run", side_effect=run):
+            self.assertEqual(lm.run("m1", "hi", 100)["model"], "Fake-Model-9B")
+            self.assertEqual(lm.run("m2", "hi", 100)["model"], "runner")
+
+    def test_a_non_text_cli_model_label_is_refused(self):
+        self.use_config([{"id": "m1", "role": "studio", "ssh": ["host-a"],
+                          "local_model": {"kind": "cli", "path": "/fake/runner", "model": 9}}])
+        with self.assertRaisesRegex(lm.RunnerError, "invalid cli model label"):
+            lm.run("m1", "hi", 100)
+
     def test_a_connect_failure_falls_back_to_the_next_route(self):
         # ssh exit 255 means it could not connect, so nothing ran on the Mini: the next route is safe to try.
         run, calls = self.fake_run([(255, "", "connection refused"), (0, "second route reply", "")])

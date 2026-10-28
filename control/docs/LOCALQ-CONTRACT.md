@@ -17,12 +17,12 @@ All Python is standard library only. No test ever contacts a Mini or a real mode
 ## Machine config (optional fields, with defaults)
 ```json
 "local_model": {"kind": "openai", "url": "http://127.0.0.1:18081/v1", "model": ""}
-"local_model": {"kind": "cli", "path": "~/Fake Tools/runner", "args": ["-p"]}
+"local_model": {"kind": "cli", "path": "~/Fake Tools/runner", "args": ["-p"], "model": "Fake-Model-9B"}
 "local_block_apps": ["Example App"]
 "local_min_free_pct": 15
 ```
 The `hub` machine defaults to the `openai` entry above; a `studio` machine has no runner until configured. `local_block_apps` is a top-level list; when omitted, the gate uses the defaults specified in the control config contract.
-`model: ""` means "whatever the server serves".
+`model: ""` means "whatever the server serves". For `cli`, `model` is an optional label recorded in the job (default: the binary's file name).
 
 ## Job file (`localq add <machine> <job.json>`)
 ```json
@@ -57,7 +57,7 @@ Refused: `len(prompt) + len(inputs)` over 6144 characters, an unknown kind, an i
 - `run(mid, prompt, max_chars, timeout=300) -> {"text", "seconds", "model"}`; raises `RunnerError(reason)`.
 - openai: `POST <url>/chat/completions`, one user message, `max_tokens` from `max_chars`, temperature 0.2.
 - cli: the prompt goes over SSH on stdin to the configured `path` and `args`, through `cfg.routes`. The prompt is never on the command line.
-- `model` is recorded as a short name (the file name without the path), so no home path lands in results.
+- `model` is recorded as a short name, so no home path lands in results: for `cli` the `local_model.model` label when set, else the binary's file name without the path; for `openai` the model id.
 
 ## CLI (`bin/localq`)
 `add`, `allow m1|m2 <hours>`, `deny m1|m2`, `run <machine>` (gate first; on failure every queued job gets

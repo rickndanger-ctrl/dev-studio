@@ -6,7 +6,8 @@ Two kinds, from the machine's optional "local_model" entry or the defaults:
   openai     POST <url>/chat/completions on a local OpenAI-compatible server (the laptop's default, `hub`).
   cli        a configured binary on the Mini, reached over SSH through cfg.routes(). The prompt goes on stdin.
              Never on the command line, and never by opening the app.
-The recorded model is a short name (the file name without any path), so no home path lands in results.
+The recorded model is a short name, so no home path lands in results: the openai model id, or for cli the
+local_model.model label when set, else the binary's file name (without any path).
 Standard library only. Import with lib/ on sys.path (re_studio_config must be importable).
 """
 import json
@@ -47,7 +48,10 @@ def resolve(mid):
         path, args = spec.get("path"), spec.get("args", [])
         if not isinstance(path, str) or not path.strip() or not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise RunnerError(f"invalid cli path or args on {mid}")
-        return {"kind": kind, "path": path, "args": args}
+        label = spec.get("model", "")
+        if not isinstance(label, str):
+            raise RunnerError(f"invalid cli model label on {mid}")
+        return {"kind": kind, "path": path, "args": args, "model": label.strip()}
     if kind is None:
         raise RunnerError(f"no local runner configured on {mid}")
     raise RunnerError(f"unknown local_model kind: {kind}")
@@ -116,7 +120,7 @@ def _cli_run(mid, spec, prompt, max_chars, timeout):
         except OSError as e:
             raise RunnerError(f"could not start ssh: {e.__class__.__name__}")
         if r.returncode == 0:
-            return {"text": (r.stdout or "").strip()[:max_chars], "model": short_name(spec["path"])}
+            return {"text": (r.stdout or "").strip()[:max_chars], "model": spec["model"] or short_name(spec["path"])}
         if r.returncode != SSH_CONNECT_FAILED:
             raise RunnerError(f"cli exit {r.returncode}: {(r.stderr or '').strip()[-200:]}; "
                               "not retried on another route (the job may have started)")

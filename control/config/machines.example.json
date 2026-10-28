@@ -16,7 +16,7 @@
       "label": "Mini 1",
       "role": "studio",
       "ssh": ["mini1.local"],
-      "local_model": {"kind": "cli", "path": "~/Fake Tools/runner", "args": ["-p"]},
+      "local_model": {"kind": "cli", "path": "~/Fake Tools/runner", "args": ["-p"], "model": "Fake-Model-9B"},
       "project": "~/DevStudio",
       "architect": "studio-architect"
     },
