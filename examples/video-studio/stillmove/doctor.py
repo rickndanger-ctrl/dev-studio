@@ -125,18 +125,15 @@ def _check_ffmpeg():
 
 def _check_depth_model():
     """Model present and SHA256 matches MODELS.md. Missing is a WARN: only da2-small needs it."""
-    import hashlib
-
+    from stillmove import models
     from stillmove.backends.depth_anything import DEFAULT_MODEL, MODEL_SHA256
 
     if not os.path.isfile(DEFAULT_MODEL):
         return "WARN", f"depth model not found at {DEFAULT_MODEL}; da2-small is off"
-    digest = hashlib.sha256()
-    with open(DEFAULT_MODEL, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    if digest.hexdigest() != MODEL_SHA256:
-        return "FAIL", f"depth model SHA256 mismatch at {DEFAULT_MODEL}"
+    try:
+        models.verify(DEFAULT_MODEL, MODEL_SHA256)
+    except ValueError as exc:
+        return "FAIL", str(exc)
     return "PASS", "depth model SHA256 matches"
 
 
@@ -148,6 +145,20 @@ def _check_onnxruntime():
     return "PASS", "onnxruntime"
 
 
+def _check_matte_model():
+    """The isnet matte model: present and SHA256 matches MODELS.md. Missing is a WARN: only --backend isnet needs it."""
+    from stillmove import models
+    from stillmove.matte import DEFAULT_ISNET_MODEL, ISNET_SHA256
+
+    if not os.path.isfile(DEFAULT_ISNET_MODEL):
+        return "WARN", f"matte model not found at {DEFAULT_ISNET_MODEL}; the isnet matte is off"
+    try:
+        models.verify(DEFAULT_ISNET_MODEL, ISNET_SHA256)
+    except ValueError as exc:
+        return "FAIL", str(exc)
+    return "PASS", "matte model SHA256 matches"
+
+
 CHECKS = (
     ("python >= 3.9", _check_python),
     ("pillow", _check_pillow),
@@ -157,6 +168,7 @@ CHECKS = (
     ("ffmpeg", _check_ffmpeg),
     ("depth model", _check_depth_model),
     ("onnxruntime", _check_onnxruntime),
+    ("matte model", _check_matte_model),
     ("shotplan import", _check_shotplan_import),
     ("shotplan web import", _check_shotplan_web_import),
     ("shotplan fake render", _check_shotplan_render),

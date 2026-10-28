@@ -232,11 +232,22 @@ class RefusalTests(ServerCase):
         # from the length alone, without waiting for the body.
         import socket
 
+        # Read the reply to the end before closing: closing early makes the server's write fail with a
+        # BrokenPipeError, which socketserver then prints as a traceback (flaky noise on stderr).
+        chunks = []
         with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
-            sock.sendall(("POST /api/check HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
-                          "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n"
-                          % (self.port, web.MAX_BODY + 1)).encode("ascii"))
-            status_line = sock.recv(64).split(b"\r\n", 1)[0]
+            try:
+                sock.sendall(("POST /api/check HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+                              "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n"
+                              % (self.port, web.MAX_BODY + 1)).encode("ascii"))
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the server may hang up first; the status line received so far is checked below
+        status_line = b"".join(chunks).split(b"\r\n", 1)[0]
         self.assertIn(b" 413 ", status_line, status_line)
 
     def test_a_body_that_is_not_json_is_400(self):

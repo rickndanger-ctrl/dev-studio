@@ -32,6 +32,7 @@
           },
           "duration": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
           "notes": {"type": "string"},
+          "layers": {"type": "boolean"},
           "transition": {
             "oneOf": [
               {"const": "cut"},

@@ -31,7 +31,15 @@ IMAGE_ALLOWLIST = {
 HOME_PATH = re.compile(r"(?:/Users|/home)/([^/\s\"'`<>)]+)")
 IPV4 = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])")
 LOCAL_HOST = re.compile(r"\b[\w-]+\.local\b", re.IGNORECASE)
-WORDS = re.compile(r"Mini [12]|OMAC")
+WORDS = re.compile(r"Mini [12]|OMAC", re.IGNORECASE)
+# Banned brand words, stored only as SHA-256 of the lowercased word or two-word phrase,
+# so publishing this test does not publish them. Every word and every pair of neighbouring
+# words in each file is hashed and compared (pairs also checked joined without the space).
+BANNED_SHA256 = {
+    "7f582bdaced238f5bb8f9c556edf7c4ecba635d4f6e0e08fb0885431de331d87",
+    "7018394a97c0bb660688fae4306322ae997110f0b3adcc15538e4d017da03b71",
+}
+TOKEN = re.compile(r"[a-z0-9]+")
 
 
 def _files():
@@ -58,7 +66,21 @@ def _private_ip(a, b):
     return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127)
 
 
-def _problems(rel, text):
+def _banned(text, hashes=None):
+    hashes = BANNED_SHA256 if hashes is None else hashes
+    words = TOKEN.findall(text.lower())
+    hits = set()
+    for i, w in enumerate(words):
+        candidates = [w]
+        if i + 1 < len(words):
+            candidates += [w + " " + words[i + 1], w + words[i + 1]]
+        for c in candidates:
+            if hashlib.sha256(c.encode()).hexdigest() in hashes:
+                hits.add(c)
+    return sorted(hits)
+
+
+def _problems(rel, text, hashes=None):
     found = []
     users = {os.environ.get(k) for k in ("USER", "LOGNAME")} - {None, ""}
     for m in HOME_PATH.finditer(text):
@@ -75,6 +97,8 @@ def _problems(rel, text):
         found.append(f"{rel}: .local hostname {m.group(0)!r}")
     for m in WORDS.finditer(text):
         found.append(f"{rel}: internal name {m.group(0)!r}")
+    for _ in _banned(text, hashes):
+        found.append(f"{rel}: banned brand word (matched a hash in BANNED_SHA256)")
     return found
 
 
@@ -139,6 +163,17 @@ class TestPrivacy(unittest.TestCase):
                    "ip 100.100.1.1", "box.local", "Mini 1", "Mini 2", "OMAC", f"by {user}"]
         for sample in samples:
             self.assertTrue(_problems("x", sample), sample)
+
+    def test_hashed_words_are_caught_in_any_spelling(self):
+        fake = {hashlib.sha256(b"sample shop").hexdigest(), hashlib.sha256(b"sampleshop").hexdigest()}
+        for sample in ["Sample Shop", "sample_shop", "SAMPLE-SHOP", "sampleshop", "a Sample  Shop logo"]:
+            self.assertTrue(_problems("x", sample, fake), sample)
+        self.assertEqual(_problems("x", "a sample of the shop", fake), [])
+
+    def test_banned_list_holds_only_hashes(self):
+        self.assertTrue(BANNED_SHA256)
+        for h in BANNED_SHA256:
+            self.assertRegex(h, r"^[0-9a-f]{64}$")
 
     def test_detector_allows_generic_text(self):
         for sample in ["/Users/<you>/x", "/home/user/y", "/Users/example/z", "http://127.0.0.1:8800/",

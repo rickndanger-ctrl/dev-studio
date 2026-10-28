@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-studio"
-version = "0.1.1"
+version = "0.2.1"
 description = "Stillmove: move a still image along a camera-motion path. Shotplan: plan shots and join them into one timeline."
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -16,11 +16,13 @@ depth = ["onnxruntime"]
 [project.scripts]
 stillmove = "stillmove.cli:main"
 shotplan = "shotplan.shotplan:main"
+makeclip = "makeclip.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["stillmove", "stillmove.*", "shotplan", "shotplan.*"]
+include = ["stillmove", "stillmove.*", "shotplan", "shotplan.*", "makeclip", "makeclip.*"]
 
 [tool.setuptools.package-data]
 stillmove = ["limits.json", "web/app.html"]
 shotplan = ["schema.json", "samples/*.json", "samples/sequences/*.json", "web/app.html"]
+makeclip = ["app.html"]

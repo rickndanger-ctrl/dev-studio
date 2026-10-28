@@ -45,6 +45,7 @@ JOB_ID = re.compile(r"[0-9a-f]{32}")
 HTML = "text/html; charset=utf-8"
 JSON = "application/json"
 DEFAULT_BACKENDS = ("plane", "gradient")
+MAX_JOBS = 20  # the newest jobs are kept; older job folders are deleted
 
 
 class ApiError(Exception):
@@ -95,7 +96,7 @@ class Studio:
     """Presets, backends and the jobs rendered so far. Every dependency can be replaced for tests."""
 
     def __init__(self, presets=None, backends=DEFAULT_BACKENDS, cameras=None, backend=None,
-                 renderer=None, page=None, job_root=None, limits=None):
+                 renderer=None, page=None, job_root=None, limits=None, max_jobs=MAX_JOBS):
         self.presets = list(presets) if presets is not None else _default_presets()
         self.backends = tuple(backends)
         self.limits = limits if limits is not None else _default_limits()  # {move type: {param, limit, unit}}
@@ -105,7 +106,8 @@ class Studio:
         self.page = page if page is not None else _read_page()
         self._own_root = job_root is None
         self.job_root = job_root or tempfile.mkdtemp(prefix="stillmove-jobs-")
-        self.jobs = {}  # job id -> {"dir": path, "manifest": public manifest}
+        self.jobs = {}  # job id -> {"dir": path, "manifest": public manifest}, oldest first
+        self.max_jobs = max_jobs
         self._lock = threading.Lock()
         self._render_lock = threading.Lock()  # one render at a time
 
@@ -181,8 +183,13 @@ class Studio:
             "height": manifest.get("height", out_h), "frames": len(manifest.get("frames", [])),
             "preview": f"/api/jobs/{job_id}/preview.gif", "mp4": bool(manifest.get("mp4")),
         }
+        stale = []
         with self._lock:
             self.jobs[job_id] = {"dir": job_dir, "preview": preview, "manifest": public}
+            while len(self.jobs) > self.max_jobs:  # drop the oldest job and its folder
+                stale.append(self.jobs.pop(next(iter(self.jobs)))["dir"])
+        for old_dir in stale:
+            shutil.rmtree(old_dir, ignore_errors=True)
         return job_id
 
     def job(self, job_id):

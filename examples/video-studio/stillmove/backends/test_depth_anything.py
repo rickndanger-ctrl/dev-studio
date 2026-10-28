@@ -18,26 +18,51 @@ _HAVE_MODEL = os.path.isfile(da.DEFAULT_MODEL) and _HAVE_RUNTIME
 
 
 class MathTest(unittest.TestCase):
+    """disparity_to_depth is pure: these run without the model."""
+
     def test_model_size_keeps_ratio_and_multiples_of_14(self):
         self.assertEqual(da._model_size(576, 1024), (294, 518))
         self.assertEqual(da._model_size(1024, 576), (518, 294))
         h, w = da._model_size(100, 333)
         self.assertEqual((h % 14, w % 14), (0, 0))
 
-    def test_disparity_maps_nearest_to_near_and_farthest_to_far(self):
-        disparity = np.array([[0.0, 2.0, 4.0]], dtype=np.float32)
-        depth = da._disparity_to_depth(disparity)
-        self.assertAlmostEqual(float(depth[0, 2]), da.NEAR, places=5)  # largest disparity = nearest
-        self.assertAlmostEqual(float(depth[0, 0]), da.FAR, places=5)  # smallest = farthest
-        self.assertTrue(np.all(depth > 0))
+    def test_flat_picture_stays_near_the_subject_depth(self):
+        # Uniform disparity with +-1% noise: the picture is almost flat.
+        rng = np.random.default_rng(0)
+        disparity = 100.0 * (1.0 + rng.uniform(-0.01, 0.01, size=(60, 80)))
+        depth = da.disparity_to_depth(disparity)
+        self.assertLess(depth.max() - depth.min(), 0.3)
+        self.assertLess(abs(float(np.median(depth)) - 5.0), 0.2)
 
-    def test_constant_disparity_gives_one_constant_depth(self):
-        depth = da._disparity_to_depth(np.full((4, 4), 7.0, dtype=np.float32))
-        self.assertTrue(np.allclose(depth, da.FAR))
+    def test_strong_contrast_uses_the_full_three_to_eight_range(self):
+        disparity = np.linspace(1.0, 10.0, 200)
+        depth = da.disparity_to_depth(disparity)
+        self.assertAlmostEqual(float(depth.min()), 3.0, delta=0.2)
+        self.assertAlmostEqual(float(depth.max()), 8.0, delta=0.2)
+
+    def test_more_disparity_means_nearer(self):
+        disparity = np.linspace(1.0, 10.0, 200)
+        depth = da.disparity_to_depth(disparity)
+        self.assertTrue(np.all(np.diff(depth) <= 1e-12))  # depth never grows as disparity grows
+
+    def test_outliers_above_p98_do_not_widen_the_range(self):
+        base = np.linspace(1.0, 10.0, 1000)
+        spiked = base.copy()
+        spiked[:5] = 1e6  # a few extreme values far above the 98th percentile
+        clean = da.disparity_to_depth(base)
+        with_outliers = da.disparity_to_depth(spiked)
+        self.assertLessEqual(with_outliers.max(), 8.0 + 1e-9)
+        self.assertGreaterEqual(with_outliers.min(), 3.0 - 1e-9)
+        self.assertAlmostEqual(float(with_outliers.max() - with_outliers.min()),
+                               float(clean.max() - clean.min()), delta=0.2)
+
+    def test_constant_disparity_is_flat_at_the_subject_depth(self):
+        depth = da.disparity_to_depth(np.full((4, 4), 7.0))
+        self.assertTrue(np.allclose(depth, 5.0))
 
     def test_result_passes_the_depth_check(self):
-        disparity = np.linspace(0.1, 9.0, 12, dtype=np.float32).reshape(3, 4)
-        check_depth(da._disparity_to_depth(disparity), (3, 4))
+        disparity = np.linspace(0.1, 9.0, 12).reshape(3, 4)
+        check_depth(da.disparity_to_depth(disparity), (3, 4))
 
 
 class MissingModelTest(unittest.TestCase):

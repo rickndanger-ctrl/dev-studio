@@ -26,6 +26,10 @@ code.** We do not read, fetch or analyse competitors' sites, apps or code.
 You need Python 3.9 or newer. Keep this folder and `camera-motion/` side by side: `camera-motion` is
 a pip package in that sibling folder, and `stillmove` uses it.
 
+Run the commands below from the `video-studio/` folder (the one with `pyproject.toml`; from the
+repository root, `cd video-studio` first). `../camera-motion` is the sibling folder, so
+`pip install ../camera-motion` only works from `video-studio/`.
+
 Put the virtual environment outside this folder, so the project stays clean:
 
     python3 -m venv ~/venvs/video-studio
@@ -51,14 +55,25 @@ Render a still picture along a camera move. This example uses the test picture t
 `tools/make_example.py` draws in code (a gradient sky, a checkerboard ground and a circle), and the
 gradient depth backend, which is a fake that needs no model:
 
-    stillmove render docs/example/input.png --preset dolly_in --backend gradient -o out/
+    stillmove render docs/example/input.png --preset dolly_in --backend gradient -o ~/video-tutorial/dolly-in
 
-The output folder holds the frames, `preview.gif` and `manifest.json`. An mp4 is written too if
+The output folder (outside the project, like every example here) holds the frames, `preview.gif` and `manifest.json`. An mp4 is written too if
 `ffmpeg` is installed and you pass `--mp4`.
 
 | Input | dolly_in | orbit_left |
 |---|---|---|
 | ![input](docs/example/input.png) | ![dolly_in](docs/example/dolly_in.gif) | ![orbit_left](docs/example/orbit_left.gif) |
+
+## stillmove: mesh for Blender
+
+`mesh` writes the still as a textured grid at its depth, plus `scene.py`, a Blender script that
+keys the camera along the same path. The fake plane depth needs no model:
+
+    stillmove mesh docs/example/input.png --preset dolly_in --depth fake --grid 32x18 -o ~/video-tutorial/mesh
+
+`--depth` takes the same backends as `render` (plane, gradient, da2-small) or a grayscale `.png`
+(white near, black far). Like `render`, the depth is smoothed once. In Blender, open the Scripting
+tab, Text > Open `scene.py`, then Run Script (Alt+P).
 
 ## shotplan: several pictures, one timeline
 
@@ -76,7 +91,7 @@ the joined GIF. Keep the output outside this folder, as the examples do.
 
 ## The web pages
 
-Both pages run on 127.0.0.1 only and send nothing anywhere else.
+All three pages run on 127.0.0.1 only and send nothing anywhere else.
 
 **stillmove** (port 8800 by default). Start it, open http://127.0.0.1:8800/, and upload a picture
 (up to 5 MB). The page renders it before it replies, then shows the preview GIF. Upload from the
@@ -93,6 +108,18 @@ plans, check them live, and render a background preview:
 
     shotplan serve --port 8810
 
+## makeclip: make a clip or a promo
+
+The Make a clip page makes one clip from one picture, or a promo from two to six pictures. Start it
+from `video-studio/` (or `makeclip --port 8820` after `pip install .`), then open
+http://127.0.0.1:8820/:
+
+    python3 -m makeclip --port 8820
+
+Make a clip renders one picture with a camera move. Make a promo renders several shots and joins
+them, and can load a plan file. Pictures come from `~/Pictures/stillmove-input/`; clips go to a new
+folder under `~/Pictures/stillmove-output/`. The server binds 127.0.0.1 only.
+
 ## The doctor
 
     stillmove doctor
@@ -100,7 +127,42 @@ plans, check them live, and render a background preview:
 One line per check, `PASS`, `WARN` or `FAIL`. The checks cover Python, Pillow, numpy, the
 camera-motion import, a small fake render, ffmpeg, the depth model, onnxruntime, and the shot-plan
 import and a small render. A `WARN` is allowed: ffmpeg is optional (mp4 is off without it), and the
-depth model and onnxruntime are only needed for `da2-small`. The doctor exits 1 only on a `FAIL`.
+depth model, onnxruntime and matte model are only needed for `da2-small` and the `isnet` matte (see
+"Messages you may see"). The doctor exits 1 only on a `FAIL`.
+
+## Messages you may see
+
+**Keep the subject in frame** (`stillmove/fit.py`, see [`stillmove/FIT.md`](stillmove/FIT.md)). Before
+`render` and `mesh` draw anything, the move is shortened just enough that the subject stays at least
+6% of the frame inside the edges. When it shortens the move, `stillmove` prints a note on stderr:
+
+    note: move shortened to 83% to keep the subject 6% inside the frame
+
+The percentages change with your picture and move. If the subject is already that close to the edge
+in the first frame, nothing can be saved, and the move is left as planned:
+
+    note: subject is already within 6% of the edge in the first frame; move left as planned
+
+`--no-fit` turns the shortening off, so the camera follows the move exactly as planned (the subject may then
+touch or leave the frame). `--fit-margin F` changes the 6% (`0 < F < 0.4`).
+
+**Doctor warnings.** `stillmove doctor` prints `WARN` lines for optional parts that are missing. Each
+is safe to ignore unless you want that feature:
+
+| Line | What to do |
+|---|---|
+| `WARN depth model: depth model not found at <path>; da2-small is off` | Only `--backend da2-small` needs it. Download the file named in `MODELS.md` to that path, or keep using `plane` or `gradient`. |
+| `WARN onnxruntime: onnxruntime not installed; da2-small is off` | `pip install onnxruntime` if you want `da2-small` or the `isnet` matte. |
+| `WARN matte model: matte model not found at <path>; the isnet matte is off` | Only `--matte isnet` needs it. Get the file named in `MODELS.md`, or use `--matte fake`. |
+| `WARN ffmpeg: ffmpeg not found on PATH; mp4 output is off` | Install ffmpeg to get `--mp4`. GIF and frame output work without it. |
+
+**A model that fails its checksum.** The depth and matte models are pinned by SHA256 in `MODELS.md`.
+If the file at the path is not the pinned one, `stillmove` refuses to load it (and `doctor` prints a
+`FAIL`):
+
+    <path> does not match the pinned model: expected SHA256 <expected>, found <found>
+
+Download the file again from the address in `MODELS.md` and check it.
 
 ## Honest limits
 

@@ -42,6 +42,7 @@ MODULE_PREFIXES = {
     ("python3", "-m", "shotplan"): "shotplan",
     ("python3", "-m", "stillmove.cli"): "stillmove",
     ("python3", "-m", "stillmove.web.server"): "server",
+    ("python3", "-m", "makeclip"): "makeclip",
 }
 COMMAND_NAMES = {"shotplan": "shotplan", "stillmove": "stillmove"}
 
@@ -135,7 +136,7 @@ class TutorialTests(unittest.TestCase):
             outputs = []
             if kind == "mkdir":
                 outputs.append(tokens[2])
-            if kind == "stillmove" and args[:1] == ["render"]:
+            if kind == "stillmove" and args[:1] in (["render"], ["mesh"]):
                 outputs.append(option_value(args, "-o"))
             if kind == "shotplan" and args[:1] == ["render"]:
                 outputs.append(args[2])  # render PLAN OUTDIR
@@ -191,6 +192,10 @@ class TutorialTests(unittest.TestCase):
                             self.assertFalse([ln for ln in lines if ln.startswith("FAIL")], result.stdout)
                         if args[0] == "render":
                             check_render_folder(self, option_value(args, "-o"))
+                        if args[0] == "mesh":
+                            folder = option_value(args, "-o")
+                            for name in ("mesh.obj", "mesh.mtl", "scene.py", "texture.png"):
+                                self.assertTrue(os.path.isfile(os.path.join(folder, name)), name)
 
                     elif kind == "shotplan" and args[0] == "serve":
                         self._run_server(python, env, [python, "-m", "shotplan", "serve"], args[1:])
@@ -206,6 +211,9 @@ class TutorialTests(unittest.TestCase):
 
                     elif kind == "server":
                         self._run_server(python, env, [python, "-m", "stillmove.web.server"], args)
+
+                    elif kind == "makeclip":
+                        self._run_server(python, env, [python, "-m", "makeclip"], args)
 
                     else:
                         self.fail("unrecognised line: %s" % line)

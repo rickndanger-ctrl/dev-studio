@@ -70,20 +70,32 @@ def _load_rgb(path):
         return np.asarray(img.convert("RGB"), dtype=np.float64)
 
 
-def render_shot(image_path, cam_path, backend, sdir):
-    """Move one still along its camera path. Returns the frame count.
+DEFAULT_FG_DEPTH = 4.6  # the foreground plane for layered shots with the fake (plane) depth
+FAKE_DEPTHS = ("fake", "plane")
+
+
+def render_shot(image_path, cam_path, backend, sdir, matte=None, fg_depth=None, fit_margin=None,
+                aspect="crop"):
+    """Move one still along its camera path. Returns (frame count, fit record, aspect record).
 
     The loop is stillmove.render.render_frames, the same one stillmove render uses: depth is
-    smoothed once, then every frame is warped with the backward warp.
+    smoothed once, then every frame is warped with the backward warp. With a matte (a
+    stillmove.matte backend) the shot is layered: the background plate and the foreground,
+    composited. fit_margin shortens the move to keep the subject inside the frame (stillmove.fitting);
+    the record is None without one.
     """
     from stillmove import cameras
     from stillmove.depth import check_depth
-    from stillmove.render import _load_image, render_frames
+    from stillmove.render import load_picture, render_frames
 
     cams = cameras.load(cam_path)
-    image = _load_image(image_path, cams.width, cams.height)
+    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect)
     depth = check_depth(backend.depth(image), image.shape[:2])
-    return render_frames(image, depth, cams, os.path.join(sdir, "frames"))
+    fit_out = {}
+    alpha = matte.alpha(image) if matte is not None else None
+    count = render_frames(image, depth, cams, os.path.join(sdir, "frames"), alpha=alpha, fg_depth=fg_depth,
+                          fit_margin=fit_margin, fit_out=fit_out)
+    return count, fit_out.get("fit"), aspect_record
 
 
 def _write_gif_pillow(outdir, count, fps):
@@ -147,11 +159,14 @@ def join(outdir, rows, shot_counts, fps):
 
 
 def render_plan(plan, plan_dir, outdir, rows, sequences, catalog, depth="fake", scale=1.0,
-                mp4=False, use_ffmpeg=None):
+                mp4=False, use_ffmpeg=None, matte="isnet", fg_depth=None, fit_margin=None, aspect="crop"):
     """Render a checked plan into outdir and return the manifest dict.
 
     rows and sequences come from shotplan.check(plan, plan_dir). use_ffmpeg None means use
-    ffmpeg if it is on PATH; False forces the Pillow GIF writer.
+    ffmpeg if it is on PATH; False forces the Pillow GIF writer. A shot with "layers": true renders
+    through stillmove.layers with the matte backend named by matte ('isnet' or 'fake'), created once
+    for the whole render and only if some shot needs it. fg_depth None means 4.6 with fake or plane
+    depth, and the depth percentile otherwise. Shots without layers render exactly as before.
     """
     from stillmove.depth import get_backend
     from camera_motion.export.formats import to_json
@@ -168,7 +183,10 @@ def render_plan(plan, plan_dir, outdir, rows, sequences, catalog, depth="fake", 
         use_ffmpeg = shutil.which("ffmpeg") is not None
 
     os.makedirs(outdir, exist_ok=True)
-    shot_counts = {}
+    shot_counts, shot_fits, shot_aspects = {}, {}, {}
+    if fg_depth is None and depth in FAKE_DEPTHS:
+        fg_depth = DEFAULT_FG_DEPTH
+    matte_backend = None  # created on the first layered shot, then shared by all of them
     for shot in plan["shots"]:
         sid = shot["id"]
         sdir = os.path.join(outdir, "shots", sid)
@@ -182,7 +200,16 @@ def render_plan(plan, plan_dir, outdir, rows, sequences, catalog, depth="fake", 
         frames = build(sequences[sid], catalog)
         with open(cam_path, "w", encoding="utf-8") as handle:
             json.dump(to_json(frames, width=width, height=height, fps=fps), handle)
-        shot_counts[sid] = render_shot(image_path, cam_path, backend, sdir)
+        layer_matte = None
+        if shot.get("layers") is True:
+            if matte_backend is None:
+                from stillmove.matte import get_matte
+
+                matte_backend = get_matte(matte)
+            layer_matte = matte_backend
+        shot_counts[sid], shot_fits[sid], shot_aspects[sid] = render_shot(
+            image_path, cam_path, backend, sdir, matte=layer_matte, fg_depth=fg_depth,
+            fit_margin=fit_margin, aspect=aspect)
 
     count = join(outdir, rows, shot_counts, fps)
     note = None
@@ -207,11 +234,14 @@ def render_plan(plan, plan_dir, outdir, rows, sequences, catalog, depth="fake", 
         "scale": scale,
         "depth": backend.name,
         "frames": count,
+        "aspect": {"mode": aspect, "source": shot_aspects[rows[0][2]]["source"] if rows else None,
+                   "target": [width, height]},
         "frame_dir": "frames",
         "gif": gif,
         "mp4": mp4_name,
         "shots": [{"id": row[2], "start": row[0], "end": row[1], "frames": shot_counts[row[2]],
-                   "dir": os.path.join("shots", row[2])} for row in rows],
+                   "dir": os.path.join("shots", row[2]), "fit": shot_fits[row[2]],
+                   "aspect": shot_aspects[row[2]]} for row in rows],
     }
     if note:
         manifest["note"] = note

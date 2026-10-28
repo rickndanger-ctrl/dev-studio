@@ -60,7 +60,13 @@ def _from_document(doc):
         frames.append(Frame(t=t, K=pixel_k, w2c=_GL_TO_CV @ w2c_gl))
     if not frames:
         raise ValueError("camera file has no frames")
-    return Cameras(fps=int(round(float(doc["fps"]))), width=width, height=height, frames=frames)
+    try:
+        fps = int(round(float(doc["fps"])))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("camera file fps must be a number") from exc
+    if fps <= 0:
+        raise ValueError("camera file fps must be positive, got %s" % doc["fps"])
+    return Cameras(fps=fps, width=width, height=height, frames=frames)
 
 
 def load(path):

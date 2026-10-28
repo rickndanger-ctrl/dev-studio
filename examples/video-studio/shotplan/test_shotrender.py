@@ -1,6 +1,8 @@
 """Tests for shotrender: frame counts, the cut boundary, crossfade blend values, the GIF,
 scaling and the render command. Images are 64x36; the depth is stillmove's plane (fake)."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -128,7 +130,10 @@ class ShotRenderTests(unittest.TestCase):
         plan_path = os.path.join(self.dir, "plan.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan([shot("a", 0.5), shot("b", 0.5)]), f)
-        self.assertEqual(shotplan.main(["render", plan_path, self.out, "--depth", "fake"]), 0)
+        out = io.StringIO()  # keep the CLI's 'rendered …' line out of the test run's output
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(shotplan.main(["render", plan_path, self.out, "--depth", "fake"]), 0)
+        self.assertIn("rendered", out.getvalue())
         self.assertTrue(os.path.isfile(os.path.join(self.out, "manifest.json")))
 
     def test_cli_render_refuses_a_bad_plan_and_writes_nothing(self):
@@ -137,7 +142,10 @@ class ShotRenderTests(unittest.TestCase):
         bad["duration"] = 2
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan([bad]), f)
-        self.assertEqual(shotplan.main(["render", plan_path, self.out]), 1)
+        err = io.StringIO()  # the CLI's error lines are expected here; keep them out of the run
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(shotplan.main(["render", plan_path, self.out]), 1)
+        self.assertIn("shots[0].duration", err.getvalue())
         self.assertFalse(os.path.exists(self.out))
 
 

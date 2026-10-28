@@ -33,10 +33,11 @@ from camera_motion.sequences.build import build  # noqa: E402
 from camera_motion.sequences.validate import index_presets, validate_sequence  # noqa: E402
 
 CATALOG = os.path.join(os.path.dirname(camera_motion.__file__), "presets", "catalog.json")
+DEFAULT_FIT_MARGIN = 0.06  # the same default as stillmove.fitting.DEFAULT_MARGIN (kept here so checks stay stdlib-light)
 ID = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER = "placeholder:"
 PLAN_KEYS = {"id", "name", "fps", "width", "height", "shots"}
-SHOT_KEYS = {"id", "image", "sequence", "duration", "transition", "notes"}
+SHOT_KEYS = {"id", "image", "sequence", "duration", "transition", "notes", "layers"}
 SHOT_REQUIRED = {"id", "image", "sequence", "duration", "transition"}
 MAX_DURATION_S = 600
 
@@ -81,6 +82,8 @@ def _shape_errors_shot(shot, index, errors):
                       % (where, MAX_DURATION_S, shot["duration"]))
     if "notes" in shot and not isinstance(shot["notes"], str):
         errors.append("%s.notes: must be a string" % where)
+    if "layers" in shot and not isinstance(shot["layers"], bool):
+        errors.append("%s.layers: must be true or false, got %r" % (where, shot["layers"]))
     if "transition" in shot:
         tr = shot["transition"]
         if tr == "cut":
@@ -209,6 +212,10 @@ def check(plan, plan_dir, catalog=None):
             errors.append("shots[%d].transition: crossfade %.3f s must be shorter than this shot (%.3f s) "
                           "and the next (%.3f s)" % (index, cf, durations[index], durations[index + 1]))
 
+    if errors:
+        # A bad crossfade makes every later start time meaningless, so stop at the real error.
+        return errors, [], sequences
+
     starts = [0.0]
     for index in range(last):
         starts.append(starts[index] + durations[index] - crossfades[index])
@@ -309,13 +316,21 @@ def cmd_render(args):
         return 1
     try:
         from shotplan import shotrender  # stdlib at import; numpy, Pillow and stillmove load inside render_plan
+        fit_margin = None if args.no_fit else args.fit_margin
+        if fit_margin is not None and not (0 < fit_margin < 0.4):
+            raise ValueError("--fit-margin must be greater than 0 and less than 0.4")
         manifest = shotrender.render_plan(plan, plan_dir, args.outdir, rows, sequences, load_json(CATALOG),
-                                          depth=args.depth, scale=args.scale, mp4=args.mp4)
+                                          depth=args.depth, scale=args.scale, mp4=args.mp4,
+                                          matte=args.matte, fg_depth=args.fg_depth, fit_margin=fit_margin,
+                                          aspect=args.aspect)
     except (ValueError, RuntimeError, OSError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     print("rendered %d frame(s) at %d fps to %s (gif: %s)" % (manifest["frames"], manifest["fps"],
                                                                args.outdir, manifest["gif"]))
+    for shot in manifest["shots"]:
+        if shot["fit"] and shot["fit"]["note"]:
+            print("note: shot %s: %s" % (shot["id"], shot["fit"]["note"]), file=sys.stderr)
     if manifest.get("note"):
         print("note: %s" % manifest["note"], file=sys.stderr)
     return 0
@@ -494,6 +509,17 @@ def main(argv=None):
                           help="depth backend: fake (stillmove's plane, the default), plane, gradient, da2-small")
     p_render.add_argument("--scale", type=float, default=1.0, help="render at this share of the plan size")
     p_render.add_argument("--mp4", action="store_true", help="also write preview.mp4 if ffmpeg is on PATH")
+    p_render.add_argument("--matte", default="isnet", choices=("isnet", "fake"),
+                          help="matte for shots with layers: isnet (IS-Net) or fake (an ellipse)")
+    p_render.add_argument("--fg-depth", type=float, default=None, metavar="D",
+                          help="foreground plane depth for layered shots (default 4.6 with fake or plane depth)")
+    p_render.add_argument("--aspect", choices=("crop", "pad"), default="crop",
+                          help="a picture whose shape differs from the plan's: crop to fill the frame (default) "
+                               "or pad it with borders")
+    p_render.add_argument("--no-fit", action="store_true",
+                          help="render every shot's camera as planned, even if the subject leaves the frame")
+    p_render.add_argument("--fit-margin", type=float, default=DEFAULT_FIT_MARGIN, metavar="F",
+                          help="keep each shot's subject at least F of the frame inside (0 < F < 0.4, default 0.06)")
     p_render.set_defaults(run=cmd_render)
     p_timeline = sub.add_parser("timeline", help="check, then write an SVG of the shots, moves and crossfades")
     p_timeline.add_argument("plan")

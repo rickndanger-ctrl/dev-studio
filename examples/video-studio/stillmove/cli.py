@@ -1,6 +1,9 @@
 """stillmove command line.
 
-  stillmove render IMAGE (--preset ID | --cam FILE) [--seconds 3 --fps 24] [--backend plane] [--mp4] -o OUTDIR
+  stillmove render IMAGE (--preset ID | --cam FILE) [--seconds 3 --fps 24] [--backend plane] [--mp4]
+                   [--layers [--matte fake|isnet]] -o OUTDIR
+  stillmove mesh IMAGE (--preset ID | --cam FILE) [--depth fake|gradient|FILE.png] [--grid 256x144] -o OUTDIR
+                                        a textured grid mesh (OBJ, Blender coordinates) and scene.py
   stillmove presets                     list camera-motion presets
   stillmove serve [--port 8800]         web page and JSON API on 127.0.0.1
   stillmove doctor                      one PASS, WARN or FAIL line per check
@@ -12,7 +15,7 @@ import sys
 
 from PIL import Image
 
-from stillmove import cameras, limits
+from stillmove import cameras, fitting, limits
 from stillmove.depth import get_backend
 from stillmove.render import render
 
@@ -40,6 +43,16 @@ def _print_report(report):
     print(f"holes at end frame: {report['holes_end_pct']:.1f} %, max over frames: {report['holes_max_pct']:.1f} %")
 
 
+def _fit_margin(args):
+    """None with --no-fit (the camera is used as given), else the checked --fit-margin."""
+    return None if args.no_fit else fitting.check_margin(args.fit_margin)
+
+
+def _print_fit_note(record):
+    if record and record.get("note"):
+        print(f"note: {record['note']}", file=sys.stderr)
+
+
 def _cmd_render(args):
     if bool(args.preset) == bool(args.cam):
         raise ValueError("give exactly one of --preset or --cam")
@@ -58,11 +71,68 @@ def _cmd_render(args):
         cams = cameras.from_preset(args.preset, args.seconds, args.fps, width, height)
     else:
         cams = cameras.load(args.cam)
+    if args.fg_depth is not None and not args.layers:
+        raise ValueError("--fg-depth needs --layers")
+    matte = None
+    if args.layers:
+        from stillmove.matte import get_matte
+
+        matte = get_matte(args.matte)
     manifest = render(args.image, cams, get_backend(args.backend), args.out, mp4=args.mp4,
-                      report=args.photo_report)
+                      report=args.photo_report, matte=matte, fg_depth=args.fg_depth,
+                      fit_margin=_fit_margin(args), aspect=args.aspect)
     print(f"wrote {len(manifest['frames'])} frames to {args.out}")
+    _print_fit_note(manifest["fit"])
+    if manifest.get("note"):
+        print(f"note: {manifest['note']}", file=sys.stderr)
     if args.photo_report:
         _print_report(manifest["report"])
+    return 0
+
+
+def _cmd_mesh(args):
+    from stillmove import mesh
+
+    if bool(args.preset) == bool(args.cam):
+        raise ValueError("give exactly one of --preset or --cam")
+    if args.seconds <= 0 or args.fps <= 0:
+        raise ValueError("--seconds and --fps must be greater than 0")
+    if args.preset:
+        width, height = _image_size(args.image)
+        cams = cameras.from_preset(args.preset, args.seconds, args.fps, width, height)
+    else:
+        cams = cameras.load(args.cam)
+    grid = mesh.resolve_grid(args.grid, cams.width, cams.height)
+    matte = None
+    if args.matte:
+        from stillmove.matte import get_matte
+
+        matte = get_matte(args.matte)  # isnet needs its model; a missing model is one error line
+    summary = mesh.write_mesh(args.image, cams, args.depth, grid, args.out, near=args.near, far=args.far,
+                              blender_preview=args.blender_preview, matte=matte,
+                              fit_margin=_fit_margin(args))
+    print(f"wrote {summary['vertices']} vertices and {summary['faces']} faces to {args.out}")
+    _print_fit_note(summary["fit"])
+    if args.blender_preview:
+        from stillmove import blender_preview
+
+        video = blender_preview.run_preview(args.out)
+        if video:
+            print(f"wrote {video}")
+    return 0
+
+
+def _cmd_matte(args):
+    import numpy as np
+
+    from stillmove import matte
+
+    backend = matte.get_matte(args.backend)
+    with Image.open(args.image) as img:
+        rgb = np.asarray(img.convert("RGB"))
+    mask = matte.to_8bit(backend.alpha(rgb))
+    Image.fromarray(mask).save(args.out)
+    print(f"wrote {args.out} ({mask.shape[1]}x{mask.shape[0]}, 8-bit, {args.backend} matte)")
     return 0
 
 
@@ -102,17 +172,59 @@ def _build_parser():
     p_render.add_argument("image", help="input image (any format Pillow reads)")
     # Both are optional here; _cmd_render reports giving both or neither as one 'error:' line.
     p_render.add_argument("--preset", metavar="ID", help="camera-motion preset id")
-    p_render.add_argument("--cam", metavar="FILE", help="camera file (camera-motion export, json or re10k)")
+    p_render.add_argument("--cam", metavar="FILE", help="camera file (camera-motion export, json)")
     p_render.add_argument("--seconds", type=float, default=3.0)
     p_render.add_argument("--fps", type=int, default=24)
     p_render.add_argument("--backend", default="plane", help="depth backend: plane, gradient (fakes) or da2-small (Depth Anything V2 Small, needs onnxruntime)")
     p_render.add_argument("--mp4", action="store_true", help="also write preview.mp4 if ffmpeg is on PATH")
+    p_render.add_argument("--aspect", choices=("crop", "pad"), default="crop",
+                          help="a picture whose shape differs from the camera's: crop to fill the frame (default) "
+                               "or pad it with borders")
     p_render.add_argument("--strict", action="store_true",
                           help="refuse a preset past its single-photo safe range (exit 1)")
     p_render.add_argument("--photo-report", action="store_true",
                           help="print timings, peak memory and hole shares for the render")
+    p_render.add_argument("--layers", action="store_true",
+                          help="Move subject and background separately so the subject floats, then merge them")
+    p_render.add_argument("--matte", default="fake", choices=("fake", "isnet"),
+                          help="matte for --layers: fake (a centred ellipse) or isnet")
+    p_render.add_argument("--fg-depth", type=float, default=None, metavar="D",
+                          help="with --layers: put the foreground plane at depth D instead of the 10th percentile")
+    p_render.add_argument("--no-fit", action="store_true",
+                          help="Disable auto-shortening of the camera move that keeps the subject off the frame edges")
+    p_render.add_argument("--fit-margin", type=float, default=fitting.DEFAULT_MARGIN, metavar="F",
+                          help="keep the subject at least F of the frame inside, shortening the move if needed "
+                               "(0 < F < 0.4, default 0.06)")
     p_render.add_argument("-o", "--out", required=True, metavar="OUTDIR", help="output folder")
     p_render.set_defaults(handler=_cmd_render)
+
+    p_mesh = sub.add_parser("mesh", help="Build a 3D surface for Blender from a photo; with --matte, the cut-out subject in front of a flat backdrop.")
+    p_mesh.add_argument("image", help="input image (any format Pillow reads)")
+    p_mesh.add_argument("--depth", default="fake", help="fake (plane), plane, gradient, da2-small, or a grayscale .png (white near, black far); smoothed like render")
+    p_mesh.add_argument("--preset", metavar="ID", help="camera-motion preset id")
+    p_mesh.add_argument("--cam", metavar="FILE", help="camera file (camera-motion export, json)")
+    p_mesh.add_argument("--seconds", type=float, default=3.0)
+    p_mesh.add_argument("--fps", type=int, default=24)
+    p_mesh.add_argument("--grid", default="auto",
+                        help="vertices across by down: auto (long side 256, short side from the image) or WxH, e.g. 32x18")
+    p_mesh.add_argument("--matte", choices=("fake", "isnet"), default=None,
+                        help="split the picture into a 'foreground' object (the matte) and a clean 'backdrop'")
+    p_mesh.add_argument("--blender-preview", action="store_true",
+                        help="also write preview_render.py and, if Blender is found, render blender-preview.mp4")
+    p_mesh.add_argument("--near", type=float, default=3.0, help="depth of white pixels in a .png depth")
+    p_mesh.add_argument("--far", type=float, default=8.0, help="depth of black pixels in a .png depth")
+    p_mesh.add_argument("--no-fit", action="store_true",
+                        help="Disable auto-shortening of the camera move that keeps the subject off the frame edges")
+    p_mesh.add_argument("--fit-margin", type=float, default=fitting.DEFAULT_MARGIN, metavar="F",
+                        help="keep the subject at least F of the frame inside (0 < F < 0.4, default 0.06)")
+    p_mesh.add_argument("-o", "--out", required=True, metavar="OUTDIR", help="output folder")
+    p_mesh.set_defaults(handler=_cmd_mesh)
+
+    p_matte = sub.add_parser("matte", help="Extract the main subject from a photo and write a soft-edged black-and-white mask.")
+    p_matte.add_argument("image", help="input image (any format Pillow reads)")
+    p_matte.add_argument("--backend", default="fake", help="fake (a soft ellipse, no model) or isnet (IS-Net, onnxruntime)")
+    p_matte.add_argument("-o", "--out", required=True, metavar="MASK.PNG", help="output mask file")
+    p_matte.set_defaults(handler=_cmd_matte)
 
     p_presets = sub.add_parser("presets", help="list camera-motion presets")
     p_presets.set_defaults(handler=_cmd_presets)

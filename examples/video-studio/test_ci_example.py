@@ -56,5 +56,13 @@ class CiExampleTest(unittest.TestCase):
             self.assertNotIn(word, text)
 
 
+class StepOrderTests(unittest.TestCase):
+    def test_install_runs_before_the_unit_tests(self):
+        # The tests import numpy and Pillow, which only the Install step provides.
+        with open(WORKFLOW, encoding="utf-8") as f:
+            text = f.read()
+        self.assertLess(text.index("name: Install"), text.index("name: Unit tests"))
+
+
 if __name__ == "__main__":
     unittest.main()

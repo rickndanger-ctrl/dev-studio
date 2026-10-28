@@ -16,20 +16,59 @@ import time
 import numpy as np
 from PIL import Image
 
-from stillmove import warp
+from stillmove import fitting, warp
 from stillmove.depth import check_depth, smooth_depth
+from stillmove.layers import Layers
 
 PREVIEW = "preview.gif"
 MP4 = "preview.mp4"
 MANIFEST = "manifest.json"
 
 
-def _load_image(path, width, height):
+ASPECT_MODES = ("crop", "pad")
+ASPECT_TOLERANCE = 0.01  # warn when the picture's aspect differs from the camera's by more than 1%
+
+
+def load_picture(path, width, height, aspect="crop"):
+    """(RGB uint8 array of width x height, aspect record) for the picture at path.
+
+    crop (the default) scales the picture to cover the frame and cuts the overflow from the centre, so
+    nothing is stretched. pad scales it to fit inside and fills the border with the picture's edge colour.
+    The record is {"mode", "source": [w, h], "target": [w, h]}; one warning goes to stderr when the
+    aspects differ by more than ASPECT_TOLERANCE.
+    """
+    if aspect not in ASPECT_MODES:
+        raise ValueError("aspect must be crop or pad")
     with Image.open(path) as img:
         img = img.convert("RGB")
-        if img.size != (width, height):
-            img = img.resize((width, height), Image.LANCZOS)
-        return np.asarray(img, dtype=np.uint8)
+    sw, sh = img.size
+    record = {"mode": aspect, "source": [sw, sh], "target": [width, height]}
+    if (sw, sh) == (width, height):
+        return np.asarray(img, dtype=np.uint8), record
+    if abs((sw / sh) / (width / height) - 1.0) > ASPECT_TOLERANCE:
+        action = "cropped to fill" if aspect == "crop" else "padded with borders"
+        print(f"warning: picture {sw}x{sh} differs in aspect from the camera's {width}x{height}; {action}",
+              file=sys.stderr)
+    if aspect == "crop":
+        scale = max(width / sw, height / sh)
+        nw, nh = max(width, round(sw * scale)), max(height, round(sh * scale))
+        img = img.resize((nw, nh), Image.LANCZOS)
+        left, top = (nw - width) // 2, (nh - height) // 2
+        img = img.crop((left, top, left + width, top + height))
+        return np.asarray(img, dtype=np.uint8), record
+    scale = min(width / sw, height / sh)
+    nw, nh = min(width, max(1, round(sw * scale))), min(height, max(1, round(sh * scale)))
+    small = np.asarray(img.resize((nw, nh), Image.LANCZOS), dtype=np.uint8)
+    edge = np.concatenate([small[0], small[-1], small[:, 0], small[:, -1]])
+    canvas = np.empty((height, width, 3), dtype=np.uint8)
+    canvas[:] = np.median(edge, axis=0).round().astype(np.uint8)
+    left, top = (width - nw) // 2, (height - nh) // 2
+    canvas[top:top + nh, left:left + nw] = small
+    return canvas, record
+
+
+def _load_image(path, width, height, aspect="crop"):
+    return load_picture(path, width, height, aspect)[0]
 
 
 def frame_durations_ms(count, fps):
@@ -62,37 +101,63 @@ def _encode_mp4(outdir, fps):
     return MP4
 
 
-def render_frames(image, depth, cams, frames_dir, stats=None):
+def render_frames(image, depth, cams, frames_dir, stats=None, alpha=None, fg_depth=None, fit_margin=None,
+                  fit_out=None):
     """Warp every camera frame from frame 0 and save frames_dir/NNNN.png. Returns the frame count.
 
     depth is the raw backend depth (checked). It is smoothed here, once per image, before any
-    frame is warped; this is the one loop shared by stillmove render and shotplan. stats, if
-    given, gets one (seconds, hole_share) pair per frame.
+    frame is warped; this is the one loop shared by stillmove render and shotplan. With alpha (a
+    matte, HxW in 0..1), each frame is two layers composited together (stillmove.layers); without
+    it, each frame is the single warp. stats, if given, gets one (seconds, hole_share) pair per
+    frame (hole_share is 0.0 for layered frames: the clean plate covers the reveals). fit_margin
+    shortens the move so the subject stays that far inside the frame (stillmove.fitting); fit_out,
+    if given, gets the fit record under "fit" (None without a margin).
     """
     depth = smooth_depth(depth, image)  # removes speckle, keeps depth edges
     os.makedirs(frames_dir, exist_ok=True)
+    layered = Layers(image, depth, alpha, fg_depth=fg_depth) if alpha is not None else None
+    cams, fit_record = fitting.fitted(cams, depth, alpha=alpha,
+                                      fg_depth=layered.near if layered is not None else None,
+                                      margin=fit_margin)
+    if fit_out is not None:
+        fit_out["fit"] = fit_record
     cam0 = cams.frames[0]
     for i, frame in enumerate(cams.frames):
         started = time.perf_counter()
-        out, filled = warp.warp(image, depth, cam0.K, frame.K, warp.relative(cams, i))
+        transform = warp.relative(cams, i)
+        if layered is not None:
+            out, hole_share = layered.compose(cam0, frame, transform), 0.0
+        else:
+            out, filled = warp.warp(image, depth, cam0.K, frame.K, transform)
+            hole_share = warp.hole_fraction(filled)
         Image.fromarray(out).save(os.path.join(frames_dir, "%04d.png" % i))
         if stats is not None:
-            stats.append((time.perf_counter() - started, warp.hole_fraction(filled)))
+            stats.append((time.perf_counter() - started, hole_share))
     return len(cams.frames)
 
 
-def render(image_path, cams, backend, outdir, mp4=False, report=False):
-    """Render image_path along cams with backend's depth. Returns the manifest dict."""
+def render(image_path, cams, backend, outdir, mp4=False, report=False, matte=None, fg_depth=None,
+           fit_margin=None, aspect="crop"):
+    """Render image_path along cams with backend's depth. Returns the manifest dict.
+
+    With a matte (an object with name and alpha(rgb)), frames are layered (see render_frames).
+    fit_margin None renders the camera as given; a margin shortens the move so the subject stays that
+    far inside the frame (stillmove.fitting), and the manifest's fit field says by how much.
+    aspect is 'crop' (fill the frame, centred) or 'pad' (borders); the manifest's aspect field records it.
+    """
     if not cams.frames:
         raise ValueError("the camera path has no frames")
     started = time.perf_counter()
-    image = _load_image(image_path, cams.width, cams.height)
+    image, aspect_record = load_picture(image_path, cams.width, cams.height, aspect)
     depth_started = time.perf_counter()
     depth = check_depth(backend.depth(image), image.shape[:2])
     depth_seconds = time.perf_counter() - depth_started
 
     stats = []
-    count = render_frames(image, depth, cams, os.path.join(outdir, "frames"), stats)
+    alpha = matte.alpha(image) if matte is not None else None
+    fit_out = {}
+    count = render_frames(image, depth, cams, os.path.join(outdir, "frames"), stats, alpha=alpha,
+                          fg_depth=fg_depth, fit_margin=fit_margin, fit_out=fit_out)
     frame_names = [f"frames/{i:04d}.png" for i in range(count)]
     frame_seconds = [s for s, _ in stats]
     hole_shares = [h for _, h in stats]
@@ -118,9 +183,12 @@ def render(image_path, cams, backend, outdir, mp4=False, report=False):
         "preview": PREVIEW,
         "mp4": mp4_path,
         "backend": backend.name,
+        "matte": matte.name if matte is not None else None,
         "fps": cams.fps,
         "width": cams.width,
         "height": cams.height,
+        "fit": fit_out.get("fit"),
+        "aspect": aspect_record,
     }
     if note:
         manifest["note"] = note

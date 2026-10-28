@@ -1,0 +1,945 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Make a clip</title>
+<style>
+:root { --bg: #fafafa; --fg: #111; --muted: #666; --line: #d0d0d0; --panel: #fff; --accent: #1a5fb4; --error: #c5221f; --ok: #1e7b34; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; --ok: #81c995; }
+}
+:root[data-theme="dark"] { --bg: #101113; --fg: #eee; --muted: #9a9a9a; --line: #333; --panel: #1b1c1f; --accent: #8ab4f8; --error: #f28b82; --ok: #81c995; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 0 0 12px; }
+h3 { font-size: 1rem; margin: 0 0 8px; }
+.muted { color: var(--muted); }
+.error { color: var(--error); }
+.ok { color: var(--ok); }
+[hidden] { display: none !important; }
+select, input[type="number"] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; min-width: 0; }
+button { font: inherit; padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--accent); cursor: pointer; }
+button:disabled { color: var(--muted); cursor: default; }
+button[aria-pressed="true"] { border-color: var(--accent); font-weight: 600; }
+a.button { display: inline-block; padding: 8px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--accent); text-decoration: none; }
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+.shot { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+.field { display: grid; gap: 4px; margin-bottom: 14px; }
+.field label, .field .label { font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+#promo-plans { flex: 1 1 16em; }
+input[type="range"] { width: min(420px, 100%); accent-color: var(--accent); }
+.drop { border: 2px dashed var(--line); border-radius: 8px; padding: 20px; text-align: center; color: var(--muted); }
+.drop.over { border-color: var(--accent); color: var(--fg); }
+.thumb { display: block; max-width: 100%; max-height: 220px; border: 1px solid var(--line); border-radius: 6px; margin-top: 10px; }
+.message { min-height: 1.4em; margin: 8px 0; }
+progress { width: min(420px, 100%); height: 16px; accent-color: var(--accent); }
+video { display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; }
+ul.clips { list-style: none; padding: 0; margin: 0; }
+ul.errors { color: var(--error); padding-left: 1.2rem; }
+ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.grid2 { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Make a clip</h1>
+  <span class="muted">Everything stays on this Mac.</span>
+</header>
+
+<nav class="tabs" aria-label="What to make">
+  <button id="tab-clip-btn" type="button" aria-pressed="true">Make a clip</button>
+  <button id="tab-promo-btn" type="button" aria-pressed="false">Make a promo</button>
+</nav>
+
+<div id="tab-clip" class="grid2">
+  <div>
+    <section class="panel" aria-labelledby="h-picture">
+      <h2 id="h-picture">1. Pick a picture</h2>
+      <div id="drop" class="drop">
+        Drop a PNG or JPEG picture here, or
+        <button id="choose" type="button">Choose a file</button>
+        <input id="file" type="file" accept="image/png,image/jpeg" hidden>
+      </div>
+      <div class="field" style="margin-top: 14px;">
+        <label for="images">Or use a picture you already added</label>
+        <select id="images"></select>
+      </div>
+      <img id="thumb" class="thumb" alt="the picture you picked" hidden>
+    </section>
+
+    <section class="panel" aria-labelledby="h-move">
+      <h2 id="h-move">2. Pick a move</h2>
+      <div class="field">
+        <label for="preset">Move</label>
+        <select id="preset"></select>
+        <span id="move-help" class="muted"></span>
+      </div>
+      <div class="field">
+        <label for="amount"><span id="amount-label">How far</span>: <span id="amount-value"></span></label>
+        <input id="amount" type="range">
+        <span id="range-note" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-length">
+      <h2 id="h-length">3. Length and size</h2>
+      <div class="field">
+        <label for="seconds">Length: <span id="seconds-value"></span></label>
+        <input id="seconds" type="range">
+      </div>
+      <div class="field">
+        <label for="size">Size</label>
+        <select id="size"></select>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-options">
+      <h2 id="h-options">4. Options</h2>
+      <div class="field">
+        <label><input id="layers" type="checkbox"> Layers (cut out the subject)</label>
+        <span id="layers-note" class="muted"></span>
+      </div>
+      <div class="field">
+        <label for="aspect">Picture shape</label>
+        <select id="aspect">
+          <option value="crop">Crop to fill</option>
+          <option value="pad">Fit with borders</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label">Depth: how the picture is read in 3D</span>
+        <label><input id="depth-simple" name="depth" type="radio" value="simple" checked> Simple (works everywhere)</label>
+        <label><input id="depth-real" name="depth" type="radio" value="real"> Real (learned depth)</label>
+        <span id="depth-note" class="muted"></span>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel" aria-labelledby="h-make">
+      <h2 id="h-make">5. Make it</h2>
+      <div class="row">
+        <button id="render" type="button" disabled>Make clip</button>
+      </div>
+      <p id="message" class="message" role="alert"></p>
+      <div id="progress-wrap" hidden>
+        <progress id="bar" max="100" value="0"></progress>
+        <span id="progress-text" class="muted"></span>
+      </div>
+      <video id="video" controls hidden></video>
+      <p id="fit-note" class="muted" hidden></p>
+      <div id="downloads" class="row" hidden style="margin-top: 12px;">
+        <a id="dl-mp4" class="button" href="#">Download MP4</a>
+        <a id="dl-gif" class="button" href="#">Download GIF</a>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="tab-promo" class="grid2" hidden>
+  <div>
+    <section class="panel" aria-labelledby="h-plans">
+      <h2 id="h-plans">1. Use a plan (optional)</h2>
+      <p class="muted">A plan file from your Pictures folder fills in the shots below.</p>
+      <div class="row">
+        <select id="promo-plans" aria-label="Plan files"><option value="">Choose a plan…</option></select>
+        <button id="promo-load" type="button">Load plan</button>
+      </div>
+      <span id="promo-load-note" class="muted"></span>
+      <ul id="promo-missing" class="errors"></ul>
+    </section>
+
+    <section class="panel" aria-labelledby="h-shots">
+      <h2 id="h-shots">2. Shots (2 to 6)</h2>
+      <div id="promo-shots"></div>
+      <div class="row">
+        <button id="promo-add" type="button">Add a shot</button>
+        <span id="promo-shots-note" class="muted"></span>
+      </div>
+      <div class="field" style="margin-top: 14px;">
+        <label for="promo-size">Size</label>
+        <select id="promo-size"></select>
+      </div>
+      <div class="field">
+        <label for="promo-aspect">Picture shape</label>
+        <select id="promo-aspect">
+          <option value="crop">Crop to fill</option>
+          <option value="pad">Fit with borders</option>
+        </select>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel" aria-labelledby="h-promo-make">
+      <h2 id="h-promo-make">3. Make the promo</h2>
+      <div class="row">
+        <button id="promo-render" type="button" disabled>Make promo</button>
+      </div>
+      <p id="promo-message" class="message" role="alert"></p>
+      <div id="promo-progress-wrap" hidden>
+        <progress id="promo-bar" max="100" value="0"></progress>
+        <span id="promo-progress-text" class="muted"></span>
+      </div>
+      <video id="promo-video" controls hidden></video>
+      <p id="promo-fit-note" class="muted" hidden></p>
+      <div id="promo-downloads" class="row" hidden style="margin-top: 12px;">
+        <a id="promo-dl-mp4" class="button" href="#">Download MP4</a>
+        <a id="promo-dl-gif" class="button" href="#">Download GIF</a>
+      </div>
+    </section>
+  </div>
+</div>
+
+<section class="panel" aria-labelledby="h-recent">
+  <h2 id="h-recent">Recent clips</h2>
+  <p id="clips-empty" class="muted" hidden>No clips yet.</p>
+  <ul id="clips" class="clips"></ul>
+</section>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// Every request that changes something goes through post(), so every POST carries the header
+// that a cross-site form cannot set.
+const HEADER = "makeclip";
+const state = { options: null, images: [], polling: null, job: null, plans: [], loaded: null };
+
+const SIZE_LABELS = { square: "Square 1080", wide: "Wide 16:9", vertical: "Vertical" };
+const DISTANCE_HELP = "How far the camera travels, in scene units.";
+const ANGLE_HELP = "How far the camera turns, in degrees.";
+const PROMO_MIN = 2;
+const PROMO_MAX = 6;
+
+function say(text, cls) {
+  const el = $("message");
+  el.textContent = text || "";
+  el.className = "message " + (cls || "");
+}
+
+function sayPromo(text, cls) {
+  const el = $("promo-message");
+  el.textContent = text || "";
+  el.className = "message " + (cls || "");
+}
+
+// Turns a server or network error into a sentence a non-programmer can act on.
+function plain(status, message) {
+  if (status === 0 || status === undefined) {
+    return "Could not reach the studio. Is it still running?";
+  }
+  if (status === 409) return "A clip is already being made. Wait for it to finish, then try again.";
+  if (status === 413) return "That picture is too large. Use one under 25 MB.";
+  if (status === 415) return "Use a PNG or JPEG picture.";
+  if (status === 400 && message) return message;
+  if (message) return "Something went wrong: " + message;
+  return "Something went wrong. Try again.";
+}
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw { status: r.status, message: body.error || body.message || "" };
+  return body;
+}
+
+async function post(url, body, contentType) {
+  const headers = { "X-Requested-With": HEADER };
+  if (contentType) headers["Content-Type"] = contentType;
+  const r = await fetch(url, { method: "POST", headers: headers, body: body });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw { status: r.status, message: data.error || data.message || "" };
+  return data;
+}
+
+function plainError(err) {
+  return plain(err && err.status, err && err.message);
+}
+
+function describePreset(p) {
+  return "You can use from " + p.min + " to " + p.max + " " + p.unit + ". The default is " + p.default + ".";
+}
+
+// The tabs: one page, two ways to make a video. Only one is shown at a time.
+function showTab(name) {
+  const promo = name === "promo";
+  $("tab-clip").hidden = promo;
+  $("tab-promo").hidden = !promo;
+  $("tab-clip-btn").setAttribute("aria-pressed", String(!promo));
+  $("tab-promo-btn").setAttribute("aria-pressed", String(promo));
+}
+
+// --- make a clip ----------------------------------------------------------------------------
+
+function selectedPreset() {
+  return state.options.presets.find((p) => p.id === $("preset").value) || state.options.presets[0];
+}
+
+function fillMoves() {
+  const select = $("preset");
+  select.innerHTML = "";
+  for (const p of state.options.presets) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    select.appendChild(opt);
+  }
+  applyPreset();
+}
+
+// Sets the amount slider to the chosen move's safe range. The slider cannot leave that range.
+function applyPreset() {
+  const p = selectedPreset();
+  const slider = $("amount");
+  const degrees = p.unit === "degrees";
+  slider.min = p.min;
+  slider.max = p.max;
+  slider.step = degrees ? 0.5 : 0.01;
+  slider.value = p.default;
+  $("amount-label").textContent = degrees ? "How much" : "How far";
+  $("move-help").textContent = degrees ? ANGLE_HELP : DISTANCE_HELP;
+  $("range-note").textContent = describePreset(p);
+  showAmount();
+}
+
+function showAmount() {
+  const p = selectedPreset();
+  $("amount-value").textContent = Number($("amount").value).toString() + " " + p.unit;
+}
+
+function fillSeconds() {
+  const d = state.options.durations;
+  const slider = $("seconds");
+  slider.min = d.min;
+  slider.max = d.max;
+  slider.step = 0.5;
+  slider.value = d.default;
+  showSeconds();
+}
+
+function showSeconds() {
+  $("seconds-value").textContent = Number($("seconds").value) + " seconds";
+}
+
+function fillSizes(selectId) {
+  const select = $(selectId);
+  select.innerHTML = "";
+  for (const s of state.options.sizes) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = (SIZE_LABELS[s.id] || s.id) + " (" + s.w + " × " + s.h + ")";
+    select.appendChild(opt);
+  }
+}
+
+// Layers and the real depth need extra parts. When the studio says they are not installed, the
+// switch is disabled and says so, instead of failing after the owner has pressed the button.
+function fillOptions() {
+  const o = state.options;
+  $("layers").disabled = !o.layers;
+  $("layers-note").textContent = o.layers ? "" : "Not installed: the subject cut-out model is missing.";
+  $("depth-real").disabled = !o.depth.real;
+  $("depth-note").textContent = o.depth.real ? "" : "Real depth: not installed.";
+}
+
+async function loadOptions() {
+  state.options = await getJSON("api/options");
+  fillMoves();
+  fillSeconds();
+  fillSizes("size");
+  fillSizes("promo-size");
+  fillOptions();
+  $("render").disabled = false;
+  $("promo-render").disabled = false;
+}
+
+function fillImages(selectName) {
+  const select = $("images");
+  select.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = state.images.length ? "Choose a picture…" : "No pictures yet";
+  select.appendChild(none);
+  for (const img of state.images) {
+    const opt = document.createElement("option");
+    opt.value = img.name;
+    opt.textContent = img.name;
+    select.appendChild(opt);
+  }
+  if (selectName) select.value = selectName;
+  showThumb();
+  refreshShotPictures();
+}
+
+function showThumb() {
+  const name = $("images").value;
+  const thumb = $("thumb");
+  if (!name) {
+    thumb.hidden = true;
+    thumb.removeAttribute("src");
+    return;
+  }
+  thumb.src = "inputs/" + encodeURIComponent(name);
+  thumb.hidden = false;
+}
+
+async function loadImages(selectName) {
+  state.images = await getJSON("api/images");
+  fillImages(selectName);
+}
+
+// The picture is saved first, then used. Only PNG and JPEG are accepted, and the size is checked
+// before anything is sent.
+async function saveUpload(file) {
+  if (file.type !== "image/png" && file.type !== "image/jpeg") {
+    throw { status: 415, message: "" };
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    throw { status: 413, message: "" };
+  }
+  return post("api/upload?name=" + encodeURIComponent(file.name), file, file.type);
+}
+
+async function uploadPicture(file) {
+  if (!file) return;
+  say("Adding the picture…", "muted");
+  try {
+    const saved = await saveUpload(file);
+    await loadImages(saved.name);
+    say("Picture added. Pick a move, then press Make clip.", "ok");
+  } catch (err) {
+    say(plainError(err), "error");
+  }
+}
+
+function showProgress(status) {
+  const wrap = $("progress-wrap");
+  wrap.hidden = false;
+  const frames = Number(status.frames) || 0;
+  const frame = Number(status.frame) || 0;
+  $("bar").max = frames || 1;
+  $("bar").value = frame;
+  $("progress-text").textContent = frames ? "frame " + frame + " of " + frames : "Starting…";
+}
+
+function clipDir(clip) {
+  return String(clip || "").split("/").filter(Boolean).pop() || "";
+}
+
+// The keep-in-frame note (a move shortened to keep the subject in frame) sits under the video; empty
+// notes hide it.
+function showFitNote(id, notes) {
+  const list = Array.isArray(notes) ? notes : [];
+  $(id).textContent = list.join(" ");
+  $(id).hidden = list.length === 0;
+}
+
+function showClip(clip, notes) {
+  const dir = encodeURIComponent(clipDir(clip));
+  const mp4 = "clips/" + dir + "/preview.mp4";
+  const gif = "clips/" + dir + "/preview.gif";
+  const video = $("video");
+  video.src = mp4;
+  video.hidden = false;
+  showFitNote("fit-note", notes);
+  $("dl-mp4").href = mp4 + "?download=1";
+  $("dl-gif").href = gif + "?download=1";
+  $("downloads").hidden = false;
+}
+
+function showPromoClip(clip, notes) {
+  const dir = encodeURIComponent(clipDir(clip));
+  const mp4 = "clips/" + dir + "/preview.mp4";
+  const gif = "clips/" + dir + "/preview.gif";
+  const video = $("promo-video");
+  video.src = mp4;
+  video.hidden = false;
+  showFitNote("promo-fit-note", notes);
+  $("promo-dl-mp4").href = mp4 + "?download=1";
+  $("promo-dl-gif").href = gif + "?download=1";
+  $("promo-downloads").hidden = false;
+}
+
+function stopPolling() {
+  if (state.polling) clearInterval(state.polling);
+  state.polling = null;
+}
+
+// The promo's progress reads "shot N of M, frame X of Y", then "joining, frame X of Y".
+function showPromoProgress(status) {
+  $("promo-progress-wrap").hidden = false;
+  const frames = Number(status.frames) || 0;
+  const frame = Number(status.frame) || 0;
+  const shot = Number(status.shot) || 1;
+  const shots = Number(status.shots) || 1;
+  $("promo-bar").max = frames || 1;
+  $("promo-bar").value = frame;
+  if (status.stage === "joining") {
+    $("promo-progress-text").textContent = "joining, frame " + frame + " of " + frames;
+  } else {
+    $("promo-progress-text").textContent = "shot " + shot + " of " + shots + ", frame " + frame + " of " + frames;
+  }
+}
+
+function setRenderButtons(disabled) {
+  $("render").disabled = disabled;
+  $("promo-render").disabled = disabled;
+}
+
+async function checkStatus() {
+  let status;
+  try {
+    status = await getJSON("api/render/status");
+  } catch (err) {
+    stopPolling();
+    setRenderButtons(false);
+    say(plainError(err), "error");
+    return;
+  }
+  const promo = status.kind === "promo";
+  if (status.state === "running") {
+    if (promo) showPromoProgress(status);
+    else showProgress(status);
+    return;
+  }
+  stopPolling();
+  setRenderButtons(false);
+  if (status.state === "done") {
+    if (promo) {
+      $("promo-progress-wrap").hidden = true;
+      showPromoClip(status.clip, status.notes);
+      sayPromo("Your promo is ready.", "ok");
+    } else {
+      $("progress-wrap").hidden = true;
+      showClip(status.clip, status.notes);
+      say("Your clip is ready.", "ok");
+    }
+    loadClips();
+    return;
+  }
+  if (status.state === "error") {
+    const text = "The " + (promo ? "promo" : "clip") + " could not be made: " + (status.message || "unknown reason") + ".";
+    if (promo) {
+      $("promo-progress-wrap").hidden = true;
+      sayPromo(text, "error");
+    } else {
+      $("progress-wrap").hidden = true;
+      say(text, "error");
+    }
+    loadClips();
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  state.polling = setInterval(checkStatus, 1000);
+  checkStatus();
+}
+
+async function makeClip() {
+  const image = $("images").value;
+  if (!image) {
+    say("Pick a picture first.", "error");
+    return;
+  }
+  const p = selectedPreset();
+  const body = {
+    image: image,
+    preset: p.id,
+    amount: Number($("amount").value),
+    seconds: Number($("seconds").value),
+    size: $("size").value,
+    layers: $("layers").checked,
+    aspect: $("aspect").value,
+    depth: $("depth-real").checked ? "real" : "simple",
+  };
+  setRenderButtons(true);
+  $("video").hidden = true;
+  $("fit-note").hidden = true;
+  $("downloads").hidden = true;
+  say("Starting…", "muted");
+  try {
+    await post("api/render", JSON.stringify(body), "application/json");
+  } catch (err) {
+    setRenderButtons(false);
+    say(plainError(err), "error");
+    return;
+  }
+  say("", "");
+  showProgress({ frame: 0, frames: 0 });
+  startPolling();
+}
+
+// --- make a promo ---------------------------------------------------------------------------
+
+function shotRows() {
+  return Array.from(document.querySelectorAll("#promo-shots .shot"));
+}
+
+// A picture a plan names is labelled from the server's found flag: its file name, and whether it was found.
+function pictureLabel(name, planFound) {
+  const base = name.split("/").pop();
+  if (planFound === true) return base + " (from the plan)";
+  if (planFound === false) return base + " (still needed)";
+  return name + " (not on this Mac)";
+}
+
+function fillRowPictures(select, selected, planFound) {
+  select.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "Choose a picture…";
+  select.appendChild(none);
+  for (const img of state.images) {
+    const opt = document.createElement("option");
+    opt.value = img.name;
+    opt.textContent = img.name;
+    select.appendChild(opt);
+  }
+  if (selected && !state.images.some((img) => img.name === selected)) {
+    const opt = document.createElement("option");
+    opt.value = selected;
+    opt.textContent = pictureLabel(selected, planFound);
+    select.appendChild(opt);
+  }
+  select.value = selected || "";
+}
+
+function refreshShotPictures() {
+  for (const row of shotRows()) {
+    const select = row.querySelector(".picture");
+    fillRowPictures(select, select.value, row._planFound);
+  }
+}
+
+function rowPreset(row) {
+  return state.options.presets.find((p) => p.id === row.querySelector(".preset").value) || state.options.presets[0];
+}
+
+function applyRowPreset(row) {
+  const p = rowPreset(row);
+  const slider = row.querySelector(".amount");
+  const degrees = p.unit === "degrees";
+  slider.min = p.min;
+  slider.max = p.max;
+  slider.step = degrees ? 0.5 : 0.01;
+  slider.value = p.default;
+  row.querySelector(".amount-text").textContent = Number(slider.value).toString() + " " + p.unit;
+  row.querySelector(".move-range").textContent = describePreset(p);
+}
+
+function setRowTransition(row) {
+  const cross = row.querySelector(".transition").value === "crossfade";
+  row.querySelector(".crossfade-field").hidden = !cross;
+}
+
+function setRowReadOnly(row, readOnly) {
+  for (const sel of [".preset", ".amount", ".seconds", ".transition", ".crossfade", ".layers"]) {
+    row.querySelector(sel).disabled = readOnly;
+  }
+}
+
+// One shot in the form. A loaded plan's shot the form cannot show is read only and says so.
+function addShot(values) {
+  const count = shotRows().length;
+  if (count >= PROMO_MAX) return null;
+  const v = values || {};
+  const row = document.createElement("div");
+  row.className = "shot";
+  // A shot kept from a loaded plan sends its sequence back unchanged; an unreadable one blocks the render.
+  row._raw = v.raw || null;
+  row._blocked = !!(v.readOnly && !v.raw);
+  row._planFound = v.planFound;
+  row.innerHTML =
+    '<div class="row"><h3 class="shot-title"></h3>' +
+    '<button class="remove" type="button">Remove this shot</button></div>' +
+    '<div class="field"><label>Picture</label><select class="picture"></select>' +
+    '<input class="upload" type="file" accept="image/png,image/jpeg"></div>' +
+    '<div class="field"><label>Move</label><select class="preset"></select>' +
+    '<span class="move-range muted"></span></div>' +
+    '<div class="field"><label>How far: <span class="amount-text"></span></label>' +
+    '<input class="amount" type="range"></div>' +
+    '<div class="field"><label>Length: <span class="seconds-text"></span></label>' +
+    '<input class="seconds" type="range"></div>' +
+    '<div class="field"><label>Change to the next shot</label>' +
+    '<select class="transition"><option value="cut">Cut</option><option value="crossfade">Crossfade</option></select>' +
+    '<div class="crossfade-field"><label>Crossfade length (seconds) ' +
+    '<input class="crossfade" type="number" min="0.1" step="0.1" value="0.5"></label></div></div>' +
+    '<div class="field"><label><input class="layers" type="checkbox"> Layers (cut out the subject)</label></div>' +
+    '<p class="shot-note muted"></p>';
+  for (const opt of state.options.presets) {
+    const o = document.createElement("option");
+    o.value = opt.id;
+    o.textContent = opt.name;
+    row.querySelector(".preset").appendChild(o);
+  }
+  const seconds = row.querySelector(".seconds");
+  seconds.min = state.options.durations.min;
+  seconds.max = state.options.durations.max;
+  seconds.step = 0.5;
+  seconds.value = v.seconds || state.options.durations.default;
+  row.querySelector(".preset").value = v.preset || state.options.presets[0].id;
+  applyRowPreset(row);
+  if (v.amount !== undefined && v.amount !== null) row.querySelector(".amount").value = v.amount;
+  row.querySelector(".amount-text").textContent = Number(row.querySelector(".amount").value).toString() +
+    " " + rowPreset(row).unit;
+  row.querySelector(".transition").value = v.transition || "cut";
+  if (v.crossfade) row.querySelector(".crossfade").value = v.crossfade;
+  row.querySelector(".layers").checked = !!v.layers;
+  row.querySelector(".layers").disabled = !state.options.layers;
+  fillRowPictures(row.querySelector(".picture"), v.image || "", row._planFound);
+  setRowTransition(row);
+  row.querySelector(".seconds-text").textContent = Number(seconds.value) + " seconds";
+  row.querySelector(".preset").addEventListener("change", () => applyRowPreset(row));
+  row.querySelector(".amount").addEventListener("input", () => {
+    row.querySelector(".amount-text").textContent = Number(row.querySelector(".amount").value).toString() +
+      " " + rowPreset(row).unit;
+  });
+  seconds.addEventListener("input", () => {
+    row.querySelector(".seconds-text").textContent = Number(seconds.value) + " seconds";
+  });
+  row.querySelector(".transition").addEventListener("change", () => setRowTransition(row));
+  row.querySelector(".remove").addEventListener("click", () => {
+    if (shotRows().length > PROMO_MIN) row.remove();
+    numberShots();
+  });
+  row.querySelector(".upload").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const saved = await saveUpload(file);
+      await loadImages(null);
+      fillRowPictures(row.querySelector(".picture"), saved.name);
+    } catch (err) {
+      sayPromo(plainError(err), "error");
+    }
+  });
+  if (v.note) row.querySelector(".shot-note").textContent = v.note;
+  if (v.readOnly) setRowReadOnly(row, true);
+  $("promo-shots").appendChild(row);
+  numberShots();
+  return row;
+}
+
+function numberShots() {
+  const rows = shotRows();
+  rows.forEach((row, index) => {
+    row.querySelector(".shot-title").textContent = "Shot " + (index + 1);
+    row.querySelector(".remove").disabled = rows.length <= PROMO_MIN;
+  });
+  $("promo-add").disabled = rows.length >= PROMO_MAX;
+  $("promo-shots-note").textContent = rows.length + " of " + PROMO_MAX + " shots";
+  $("promo-render").disabled = rows.length < PROMO_MIN || rows.some((r) => r._blocked);
+}
+
+function clearShots() {
+  $("promo-shots").innerHTML = "";
+}
+
+function fillPlanList() {
+  const select = $("promo-plans");
+  select.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = state.plans.length ? "Choose a plan…" : "No plan files in your Pictures folder";
+  select.value = "";
+  select.appendChild(none);
+  for (const plan of state.plans) {
+    const opt = document.createElement("option");
+    opt.value = plan.path;
+    opt.textContent = plan.name + " (" + plan.shots + " shots, " + plan.path + ")";
+    select.appendChild(opt);
+  }
+}
+
+async function loadPlans() {
+  state.plans = await getJSON("api/promo/plans");
+  fillPlanList();
+}
+
+// A loaded plan fills the shot rows. A shot the form cannot change is shown read only, with a note;
+// the render button waits until every shot can be made from the form.
+async function loadPlan() {
+  const path = $("promo-plans").value;
+  if (!path) {
+    $("promo-load-note").textContent = "Choose a plan first.";
+    return;
+  }
+  try {
+    const loaded = await post("api/promo/load", JSON.stringify({ path: path }), "application/json");
+    state.loaded = { path: path, missing: loaded.missing };
+    clearShots();
+    for (const shot of loaded.shots) {
+      const values = shot.editable
+        ? { image: shot.image, planFound: shot.found, preset: shot.preset, amount: shot.amount, seconds: shot.seconds,
+            transition: shot.transition, crossfade: shot.crossfade, layers: shot.layers }
+        : { image: shot.image, planFound: shot.found, raw: shot.raw, readOnly: true,
+            note: shot.raw ? "Kept as it is in the plan." : "This shot's sequence could not be read from the plan file." };
+      addShot(values);
+    }
+    if (loaded.size) $("promo-size").value = loaded.size;
+    const missing = $("promo-missing");
+    missing.innerHTML = "";
+    if (loaded.missing.length) {
+      const li = document.createElement("li");
+      li.textContent = "Still needed: " + loaded.missing.join(", ");
+      missing.appendChild(li);
+    }
+    $("promo-load-note").textContent = "Loaded " + loaded.shots.length + " shots.";
+    numberShots();
+  } catch (err) {
+    sayPromo(plainError(err), "error");
+  }
+}
+
+function promoBody() {
+  const rows = shotRows();
+  return {
+    size: $("promo-size").value,
+    aspect: $("promo-aspect").value,
+    source: state.loaded ? state.loaded.path : null,
+    shots: rows.map((row) => {
+      if (row._raw) return { image: row.querySelector(".picture").value, raw: row._raw };
+      const transition = row.querySelector(".transition").value;
+      return {
+        image: row.querySelector(".picture").value,
+        preset: row.querySelector(".preset").value,
+        amount: Number(row.querySelector(".amount").value),
+        seconds: Number(row.querySelector(".seconds").value),
+        transition: transition,
+        crossfade: transition === "crossfade" ? Number(row.querySelector(".crossfade").value) : undefined,
+        layers: row.querySelector(".layers").checked,
+      };
+    }),
+  };
+}
+
+async function makePromo() {
+  const body = promoBody();
+  if (body.shots.some((s) => !s.image)) {
+    sayPromo("Pick a picture for every shot first.", "error");
+    return;
+  }
+  setRenderButtons(true);
+  $("promo-video").hidden = true;
+  $("promo-fit-note").hidden = true;
+  $("promo-downloads").hidden = true;
+  sayPromo("Starting…", "muted");
+  try {
+    await post("api/promo/render", JSON.stringify(body), "application/json");
+  } catch (err) {
+    setRenderButtons(false);
+    sayPromo(plainError(err), "error");
+    return;
+  }
+  sayPromo("", "");
+  showPromoProgress({ frame: 0, frames: 0, shot: 1, shots: body.shots.length, stage: "shots" });
+  startPolling();
+}
+
+// --- recent clips (both tabs) ---------------------------------------------------------------
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// A clip's time as a short, plain date: "27 Oct, 18:31" (day, short month, 24-hour time). The year
+// is added only when it is not this year. Written by hand, so it reads the same in every browser.
+function formatMade(iso, now) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso || "");
+  const today = now || new Date();
+  const year = d.getFullYear() !== today.getFullYear() ? " " + d.getFullYear() : "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return d.getDate() + " " + MONTHS[d.getMonth()] + year + ", " + hh + ":" + mm;
+}
+
+async function loadClips() {
+  let clips;
+  try {
+    clips = await getJSON("api/clips");
+  } catch (err) {
+    say(plainError(err), "error");
+    return;
+  }
+  const list = $("clips");
+  list.innerHTML = "";
+  $("clips-empty").hidden = clips.length > 0;
+  for (const c of clips) {
+    const item = document.createElement("li");
+    const title = document.createElement("div");
+    if (c.kind === "promo") {
+      title.textContent = "Promo, " + c.shots + " shots, " + c.seconds + " s, " + c.size + " (" + formatMade(c.made) + ")";
+    } else {
+      title.textContent = c.preset + ", " + c.seconds + " s, " + c.size + " (" + formatMade(c.made) + ")";
+    }
+    item.appendChild(title);
+    const dir = encodeURIComponent(c.name);
+    const links = document.createElement("div");
+    links.className = "row";
+    const watch = document.createElement("a");
+    watch.href = "clips/" + dir + "/preview.mp4";
+    watch.textContent = "Watch";
+    links.appendChild(watch);
+    const mp4 = document.createElement("a");
+    mp4.href = "clips/" + dir + "/preview.mp4?download=1";
+    mp4.textContent = "Download MP4";
+    links.appendChild(mp4);
+    const gif = document.createElement("a");
+    gif.href = "clips/" + dir + "/preview.gif?download=1";
+    gif.textContent = "Download GIF";
+    links.appendChild(gif);
+    item.appendChild(links);
+    list.appendChild(item);
+  }
+}
+
+function wire() {
+  $("tab-clip-btn").addEventListener("click", () => showTab("clip"));
+  $("tab-promo-btn").addEventListener("click", () => showTab("promo"));
+  $("preset").addEventListener("change", applyPreset);
+  $("amount").addEventListener("input", showAmount);
+  $("seconds").addEventListener("input", showSeconds);
+  $("images").addEventListener("change", showThumb);
+  $("render").addEventListener("click", makeClip);
+  $("choose").addEventListener("click", () => $("file").click());
+  $("file").addEventListener("change", () => uploadPicture($("file").files[0]));
+  const drop = $("drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    uploadPicture(e.dataTransfer.files[0]);
+  });
+  $("promo-load").addEventListener("click", loadPlan);
+  $("promo-add").addEventListener("click", () => addShot({}));
+  $("promo-render").addEventListener("click", makePromo);
+}
+
+async function start() {
+  wire();
+  try {
+    await loadOptions();
+    await loadImages();
+    await loadPlans();
+    await loadClips();
+    if (shotRows().length === 0) {
+      addShot({});
+      addShot({});
+    }
+  } catch (err) {
+    say(plainError(err), "error");
+  }
+}
+
+start();
+</script>
+</body>
+</html>

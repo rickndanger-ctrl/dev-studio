@@ -44,7 +44,7 @@ ORIGINAL_CHECKS = ("python >= 3.9", "pillow", "numpy", "camera_motion import", "
 class DoctorChecksTests(unittest.TestCase):
     def test_the_checks_are_listed_in_order(self):
         names = tuple(name for name, _ in doctor.CHECKS)
-        self.assertEqual(names, ORIGINAL_CHECKS + SHOTPLAN_CHECKS)
+        self.assertEqual(names, ORIGINAL_CHECKS + ("matte model",) + SHOTPLAN_CHECKS)
 
     def test_shotplan_import_passes(self):
         self.assertEqual(doctor._check_shotplan_import(), ("PASS", "shotplan import"))
@@ -97,17 +97,22 @@ class DoctorChecksTests(unittest.TestCase):
         def fail():
             return "FAIL", "bad"
 
-        with mock.patch.object(doctor, "CHECKS", (("ok", ok),)):
-            self.assertEqual(doctor.main(), 0)
-        with mock.patch.object(doctor, "CHECKS", (("ok", ok), ("fail", fail))):
-            self.assertEqual(doctor.main(), 1)
+        out = io.StringIO()  # keep the fixture's PASS/FAIL lines out of the test run's output
+        with contextlib.redirect_stdout(out):
+            with mock.patch.object(doctor, "CHECKS", (("ok", ok),)):
+                self.assertEqual(doctor.main(), 0)
+            with mock.patch.object(doctor, "CHECKS", (("ok", ok), ("fail", fail))):
+                self.assertEqual(doctor.main(), 1)
+        self.assertIn("FAIL fail: bad", out.getvalue())
 
     def test_a_warn_does_not_fail_the_doctor(self):
         def warn():
             return "WARN", "optional thing is off"
 
-        with mock.patch.object(doctor, "CHECKS", (("warn", warn),)):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(doctor, "CHECKS", (("warn", warn),)):
             self.assertEqual(doctor.main(), 0)
+        self.assertIn("WARN warn", out.getvalue())
 
 
 if __name__ == "__main__":

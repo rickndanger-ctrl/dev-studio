@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -6,6 +8,45 @@ import unittest
 import numpy as np
 
 from stillmove import cameras
+
+
+class ZeroFpsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    def _camera_file(self, fps):
+        from camera_motion.engine.camera_path import path
+        from camera_motion.export.formats import to_json
+        preset = {"type": "dolly", "params": {"axis": "z", "distance": 1}, "easing": "linear"}
+        doc = to_json(path(preset, duration_s=1.0, fps=24), width=8, height=8, fps=24)
+        doc["fps"] = fps
+        out = os.path.join(self.tmp, "cam-%s.json" % fps)
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump(doc, handle)
+        return out
+
+    def test_zero_fps_is_refused_with_a_clear_error(self):
+        with self.assertRaisesRegex(ValueError, "fps must be positive"):
+            cameras.load(self._camera_file(0))
+
+    def test_negative_fps_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "fps must be positive"):
+            cameras.load(self._camera_file(-24))
+
+    def test_render_cli_with_zero_fps_exits_1_and_writes_no_folder(self):
+        from PIL import Image
+        from stillmove.cli import main
+        image = os.path.join(self.tmp, "in.png")
+        Image.new("RGB", (8, 8), (120, 120, 120)).save(image)
+        out = os.path.join(self.tmp, "run")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["render", image, "--cam", self._camera_file(0), "--backend", "plane", "-o", out])
+        self.assertEqual(code, 1)
+        self.assertIn("error:", stderr.getvalue())
+        self.assertFalse(os.path.exists(out))
 
 
 class LoadExportTest(unittest.TestCase):

@@ -65,6 +65,10 @@ def smooth_depth(depth, image, median=5, bilateral=5, sigma_space=1.5, sigma_ran
     return num / den
 
 
+# Every name get_backend accepts. Kept in one place so other commands can list them.
+BACKEND_NAMES = ("da2-small", "gradient", "plane")
+
+
 def get_backend(name):
     """A backend by name. Only the fakes are registered here."""
     from stillmove.backends import fake

@@ -45,6 +45,7 @@ if VIDEO_STUDIO not in sys.path:
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8810
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+MAX_JOBS = 20             # render folders kept on disk; the newest are kept
 MAX_BODY = 64 * 1024          # a plan is a few kilobytes; anything bigger is refused
 RENDER_SCALE = 0.25
 PLAN_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -92,7 +93,7 @@ def _plan_paths_ok(plan):
 class Studio:
     """The sample plans, the checks, and the one background render. Every dependency is injectable."""
 
-    def __init__(self, samples=SAMPLES, renderer=None, job_root=None, page=None):
+    def __init__(self, samples=SAMPLES, renderer=None, job_root=None, page=None, max_jobs=MAX_JOBS):
         import shotplan
 
         self.shotplan = shotplan
@@ -104,6 +105,8 @@ class Studio:
         self.catalog = shotplan.load_json(shotplan.CATALOG)
         self._lock = threading.Lock()
         self.job = None  # {"id", "state", "message", "gif"} for the latest render
+        self.max_jobs = max_jobs
+        self._job_dirs = []  # job folders on disk, oldest first; older ones are deleted
 
     def close(self):
         if self._own_root:
@@ -164,6 +167,9 @@ class Studio:
             os.makedirs(job_dir)
             self._stage(plan, job_dir)
             self.job = {"id": job_id, "state": "running", "message": "rendering…", "gif": None}
+            self._job_dirs.append(job_dir)
+            while len(self._job_dirs) > self.max_jobs:  # drop the oldest job folder
+                shutil.rmtree(self._job_dirs.pop(0), ignore_errors=True)
         threading.Thread(target=self._run, args=(job_id, job_dir), daemon=True).start()
         return job_id
 

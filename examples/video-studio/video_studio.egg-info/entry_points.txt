@@ -1,0 +1,3 @@
+[console_scripts]
+shotplan = shotplan.shotplan:main
+stillmove = stillmove.cli:main
