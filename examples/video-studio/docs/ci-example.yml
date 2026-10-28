@@ -31,11 +31,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Unit tests
-        run: python -W error -m unittest
       - name: Install
         run: |
           pip install ../camera-motion
           pip install .
+      - name: Unit tests
+        run: python -W error -m unittest
       - name: Doctor
         run: stillmove doctor
