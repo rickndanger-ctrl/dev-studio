@@ -51,9 +51,11 @@ REQUIRED_HEADER = ("X-Requested-With", "makeclip")
 MAX_JSON = 64 * 1024
 MAX_UPLOAD = 25 * 1024 * 1024
 FPS = 24
+SMOOTH = (0, 2, 4)  # 0 is off; N renders at fps / N, then interpolates N times (stillmove render --smooth)
 CLIP_LIMIT = 20
 ISNET_MODEL = os.path.join(os.path.expanduser("~"), "models", "isnet-general-use", "isnet-general-use.onnx")
 DEPTH_MODEL = os.path.join(os.path.expanduser("~"), "models", "depth-anything-v2-small", "model.onnx")
+RIFE_MODEL = os.path.join(os.path.expanduser("~"), "models", "rife", "rife_ifnet_midpoint.onnx")
 # "every" renders each of these into its own folder (stillmove render --sizes), plus sizes.zip.
 EVERY = "every"
 EVERY_SIZES = ("square", "wide", "vertical")
@@ -201,6 +203,10 @@ class Studio:
                 self._onnx = False
         return self._onnx
 
+    def interp_backend(self):
+        """The interpolation Smooth uses: rife when its model file and onnxruntime are here, else linear."""
+        return "rife" if os.path.isfile(RIFE_MODEL) and self._onnx_ok() else "linear"
+
     def options(self):
         presets = []
         for pid, (param, unit, lo, hi, default) in RANGES.items():
@@ -326,6 +332,11 @@ class Studio:
         aspect = body.get("aspect", "crop")
         if aspect not in ASPECTS:
             raise ApiError(400, "aspect must be crop or pad")
+        smooth = body.get("smooth", 0)
+        if isinstance(smooth, bool) or not isinstance(smooth, int) or smooth not in SMOOTH:
+            raise ApiError(400, "smooth must be 0 (off), 2 or 4")
+        if smooth and (FPS % smooth or round(seconds * FPS) % smooth):
+            raise ApiError(400, "smooth %d needs seconds times fps to be a multiple of %d" % (smooth, smooth))
         image = body.get("image")
         if not isinstance(image, str):
             raise ApiError(400, "image is required")
@@ -334,10 +345,12 @@ class Studio:
         if layers and not (os.path.isfile(ISNET_MODEL) and self._onnx_ok()):
             raise ApiError(400, "layers need the isnet model and onnxruntime in the render python")
         return {"image": image, "preset": preset, "amount": float(amount), "seconds": float(seconds),
-                "size": size, "layers": layers, "depth": depth, "param": param, "aspect": aspect}
+                "size": size, "layers": layers, "depth": depth, "param": param, "aspect": aspect,
+                "smooth": smooth}
 
     def start(self, body):
         req = self._validate(body)
+        req["interp"] = self.interp_backend() if req["smooth"] else None
         source = self.input_file(req["image"])
         # Every size is one camera file, so it is built at the square frame; the render re-targets it per size.
         camera_size = "square" if req["size"] == EVERY else req["size"]
@@ -366,14 +379,16 @@ class Studio:
             made = datetime.datetime.now().isoformat(timespec="seconds")
             meta = {"name": clip, "made": made, "image": req["image"], "preset": req["preset"],
                     "amount": req["amount"], "seconds": req["seconds"], "size": req["size"], "fps": FPS,
-                    "layers": req["layers"], "depth": req["depth"], "frames": expected}
+                    "layers": req["layers"], "depth": req["depth"], "smooth": req["smooth"],
+                    "interp": req["interp"], "frames": expected}
             with open(os.path.join(clip_dir, "clip.json"), "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
                 f.write("\n")
             command = self._command(source, cam_path, clip_dir, req)
             job_id = uuid.uuid4().hex
             self.job = {"id": job_id, "state": "running", "message": "rendering", "clip": clip,
-                        "frames": expected, "clip_dir": clip_dir, "every": req["size"] == EVERY}
+                        "frames": expected, "clip_dir": clip_dir, "every": req["size"] == EVERY,
+                        "smooth": {"factor": req["smooth"], "backend": req["interp"]} if req["smooth"] else None}
         threading.Thread(target=self._run, args=(job_id, command, clip_dir, expected, req["size"] == EVERY),
                          daemon=True).start()
         return job_id
@@ -387,6 +402,8 @@ class Studio:
             index = cmd.index("-o")
             cmd[index:index] = ["--sizes", ",".join(EVERY_SIZES)]
         cmd += ["--aspect", req.get("aspect", "crop")]
+        if req.get("smooth"):
+            cmd += ["--smooth", str(req["smooth"]), "--interp-backend", req.get("interp") or "linear"]
         if req["layers"]:
             cmd += ["--layers", "--matte", "isnet"]
             if req["depth"] == "simple":
@@ -426,7 +443,7 @@ class Studio:
         if job["state"] == "done":
             frame = job["frames"]
         status = {"state": job["state"], "frame": frame, "frames": job["frames"], "message": job["message"],
-                  "clip": job["clip"], "notes": notes}
+                  "clip": job["clip"], "notes": notes, "smooth": job.get("smooth")}
         if job.get("every") and job["state"] == "done":
             status["files"] = every_files(os.path.basename(job["clip_dir"]), job["clip_dir"])
             status["zip"] = "/clips/%s/sizes.zip" % os.path.basename(job["clip_dir"])

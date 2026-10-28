@@ -44,7 +44,7 @@ ORIGINAL_CHECKS = ("python >= 3.9", "pillow", "numpy", "camera_motion import", "
 class DoctorChecksTests(unittest.TestCase):
     def test_the_checks_are_listed_in_order(self):
         names = tuple(name for name, _ in doctor.CHECKS)
-        self.assertEqual(names, ORIGINAL_CHECKS + ("matte model",) + SHOTPLAN_CHECKS)
+        self.assertEqual(names, ORIGINAL_CHECKS + ("matte model", "rife model") + SHOTPLAN_CHECKS)
 
     def test_shotplan_import_passes(self):
         self.assertEqual(doctor._check_shotplan_import(), ("PASS", "shotplan import"))

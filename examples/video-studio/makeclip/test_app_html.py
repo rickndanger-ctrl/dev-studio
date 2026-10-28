@@ -119,6 +119,21 @@ class PageTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
 
+    def test_the_smooth_control_is_sent_and_not_blocked_for_every_size(self):
+        text = read_page()
+        self.assertIn('id="smooth"', text)
+        self.assertIn("smooth: Number($(\"smooth\").value)", text)
+        self.assertNotIn("syncSmooth", text)
+        self.assertNotIn("smooth-note", text)
+
+    def test_the_result_line_names_the_interpolation_smooth_used(self):
+        self.assertIn("smooth-result", parse().ids)
+        text = script_text()
+        self.assertIn("function showSmoothResult(smooth)", text)
+        self.assertIn("showSmoothResult(status.smooth);", text)
+        self.assertIn('smooth.backend === "rife" ? "RIFE model" : "linear blend"', text)
+        self.assertIn('$("smooth-result").hidden = true;', text)
+
     def test_recent_clips_use_the_friendly_date_formatter(self):
         text = script_text()
         self.assertIn("function formatMade(iso, now)", text)

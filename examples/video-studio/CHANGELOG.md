@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- `stillmove interp FRAMES_DIR --factor 2|4 -o OUTDIR`: in-between frames for a folder of frames.
+  Every original frame is kept, and N frames become (N - 1) x factor + 1.
+- `stillmove render --smooth N` (2 or 4) renders at fps / N and interpolates up, so the clip has the same
+  duration and smoother motion. `--slowmo N` renders at the full fps and interpolates, so the clip plays
+  N times longer. Both also work with `--sizes`. `--interp-backend linear|rife` picks the method.
+- The `rife` interpolation backend: RIFE's midpoint model run with onnxruntime. 2x uses the midpoint, and
+  4x makes the quarter points from it. The model file, its source and checksum are in `MODELS.md`; without
+  it, `--interp-backend rife` says so, and `linear` (a plain blend) needs no model.
+- Make a clip has a "Smooth motion" choice (Off, 2x, 4x), also with "Every size". The page's lengths always
+  fit; any other length is refused with a plain message when seconds times 24 fps is not a multiple of it.
+- Checked on real pictures: 73 frames at 1080x1080 on an Apple-silicon Mac mini (CPU). RIFE 2x gave 145 frames
+  in 284 s (about 3.9 s per model call, 1.9 GB peak); RIFE 4x gave 289 frames in 979 s (3 calls per pair,
+  about 4.3 GB footprint); the linear blend at 2x took 44 s. The highest-motion in-between showed no ghosting.
+
 ## 0.2.2
 
 ### Added

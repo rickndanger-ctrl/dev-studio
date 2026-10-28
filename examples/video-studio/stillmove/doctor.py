@@ -137,6 +137,20 @@ def _check_depth_model():
     return "PASS", "depth model SHA256 matches"
 
 
+def _check_rife_model():
+    """RIFE midpoint model: present and SHA256 matches MODELS.md. Missing is a WARN: only --interp-backend rife needs it."""
+    from stillmove import models
+    from stillmove.backends.rife import DEFAULT_MODEL, MODEL_SHA256
+
+    if not os.path.isfile(DEFAULT_MODEL):
+        return "WARN", f"rife model not found at {DEFAULT_MODEL}; --interp-backend rife is off"
+    try:
+        models.verify(DEFAULT_MODEL, MODEL_SHA256)
+    except ValueError as exc:
+        return "FAIL", str(exc)
+    return "PASS", "rife model SHA256 matches"
+
+
 def _check_onnxruntime():
     try:
         import onnxruntime  # noqa: F401
@@ -169,6 +183,7 @@ CHECKS = (
     ("depth model", _check_depth_model),
     ("onnxruntime", _check_onnxruntime),
     ("matte model", _check_matte_model),
+    ("rife model", _check_rife_model),
     ("shotplan import", _check_shotplan_import),
     ("shotplan web import", _check_shotplan_web_import),
     ("shotplan fake render", _check_shotplan_render),

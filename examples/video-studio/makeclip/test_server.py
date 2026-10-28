@@ -109,12 +109,13 @@ class ServerCase(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.client = Client(self.port)
         # The tests never depend on what models are installed here.
-        self._saved = (clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL)
+        self._saved = (clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL)
         clipserver.ISNET_MODEL = os.path.join(self.root, "no-isnet.onnx")
         clipserver.DEPTH_MODEL = os.path.join(self.root, "no-depth.onnx")
+        clipserver.RIFE_MODEL = os.path.join(self.root, "no-rife.onnx")
 
     def tearDown(self):
-        clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL = self._saved
+        clipserver.ISNET_MODEL, clipserver.DEPTH_MODEL, clipserver.RIFE_MODEL = self._saved
         self.httpd.shutdown()
         self.httpd.server_close()
         shutil.rmtree(self.root, ignore_errors=True)
@@ -338,6 +339,104 @@ class RenderTests(ServerCase):
         for body in cases:
             with self.subTest(body=body):
                 self.assertEqual(self.client.post("/api/render", body)[0], 400)
+
+    def test_smooth_values_and_compatibility(self):
+        # The page always sends 24 fps and half-second lengths; every one of them works with 2x and 4x.
+        for smooth in (2, 4):
+            for halves in range(4, 17):  # 2.0 to 8.0 seconds
+                with self.subTest(smooth=smooth, seconds=halves / 2):
+                    self.studio._validate(good_render(smooth=smooth, seconds=halves / 2))
+        refused = [
+            good_render(smooth=4, seconds=2.1),        # 2.1 s * 24 fps = 50 frames, not a multiple of 4
+            good_render(smooth=3),                     # only 2 or 4
+            good_render(smooth=1),
+            good_render(smooth="4"),
+            good_render(smooth=2.0),
+            good_render(smooth=True),
+        ]
+        for body in refused:
+            with self.subTest(body=body):
+                status, reply, _ = self.client.post("/api/render", body)
+                self.assertEqual(status, 400)
+                self.assertIn("smooth", reply["error"])
+
+    def test_smooth_works_with_every_size(self):
+        commands = []
+
+        def capture(command, env, clip_dir, expected):
+            commands.append(command)
+            return fake_renderer()(command, env, clip_dir, expected)
+
+        self.studio.renderer = capture
+        self.add_input()
+        self.assertEqual(self.client.post("/api/render", good_render(smooth=4, size="every"))[0], 202)
+        self.client.wait_done()
+        command = commands[-1]
+        self.assertIn("--sizes", command)
+        self.assertEqual(command[command.index("--smooth") + 1], "4")
+        status, reply, _ = self.client.post("/api/render", good_render(smooth=4, size="every", seconds=2.1))
+        self.assertEqual(status, 400)  # the multiple rule still applies
+
+    def smooth_render(self, **over):
+        """Render with Smooth 4x and return (command, final status, clip.json)."""
+        commands = []
+
+        def capture(command, env, clip_dir, expected):
+            commands.append(command)
+            return fake_renderer()(command, env, clip_dir, expected)
+
+        self.studio.renderer = capture
+        self.assertEqual(self.client.post("/api/render", good_render(**dict({"smooth": 4}, **over)))[0], 202)
+        done = self.client.wait_done()
+        with open(os.path.join(self.outputs, done["clip"], "clip.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        return commands[-1], done, meta
+
+    def test_smooth_uses_rife_when_its_model_and_onnxruntime_are_there(self):
+        with open(clipserver.RIFE_MODEL, "wb") as f:
+            f.write(b"model")
+        self.studio._onnx = True
+        command, done, meta = self.smooth_render()
+        self.assertEqual(command[command.index("--interp-backend") + 1], "rife")
+        self.assertEqual(meta["interp"], "rife")
+        self.assertEqual(done["smooth"], {"factor": 4, "backend": "rife"})
+
+    def test_smooth_uses_linear_without_the_rife_model(self):
+        command, done, meta = self.smooth_render()
+        self.assertEqual(command[command.index("--interp-backend") + 1], "linear")
+        self.assertEqual(meta["interp"], "linear")
+        self.assertEqual(done["smooth"], {"factor": 4, "backend": "linear"})
+
+    def test_smooth_uses_linear_when_the_model_is_there_but_onnxruntime_is_not(self):
+        with open(clipserver.RIFE_MODEL, "wb") as f:
+            f.write(b"model")
+        self.studio._onnx = False
+        command, done, _ = self.smooth_render()
+        self.assertEqual(command[command.index("--interp-backend") + 1], "linear")
+        self.assertEqual(done["smooth"]["backend"], "linear")
+
+    def test_smooth_off_has_no_interpolation_at_all(self):
+        command, done, meta = self.smooth_render(smooth=0)
+        self.assertNotIn("--smooth", command)
+        self.assertNotIn("--interp-backend", command)
+        self.assertIsNone(meta["interp"])
+        self.assertIsNone(done["smooth"])
+
+    def test_smooth_4x_is_passed_to_the_render(self):
+        commands = []
+
+        def capture(command, env, clip_dir, expected):
+            commands.append(command)
+            return fake_renderer()(command, env, clip_dir, expected)
+
+        self.studio.renderer = capture
+        self.add_input()
+        self.assertEqual(self.client.post("/api/render", good_render(smooth=4))[0], 202)
+        self.client.wait_done()
+        self.assertEqual(commands[-1][commands[-1].index("--smooth") + 1], "4")
+        self.assertEqual(self.client.post("/api/render", good_render())[0], 202)
+        self.client.wait_done()
+        self.assertNotIn("--smooth", commands[-1])
 
     def test_layers_and_real_depth_refuse_when_their_models_are_missing(self):
         self.assertEqual(self.client.post("/api/render", good_render(layers=True))[0], 400)

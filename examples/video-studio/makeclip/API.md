@@ -33,7 +33,7 @@ stay strictly inside one of the two roots.
 | `GET /api/images` | input pictures, newest first: `[{name, url}]` |
 | `GET /inputs/<name>` | one input picture (thumbnail use) |
 | `POST /api/upload?name=` | `{name, url}` of the saved picture |
-| `POST /api/render` | body `{image, preset, amount, seconds, size, layers, depth}` → 202 `{job}`; 409 while one runs; 400 with a plain message for any value out of range |
+| `POST /api/render` | body `{image, preset, amount, seconds, size, layers, depth, smooth}` (`smooth`: 0 or absent for off, 2 or 4, also with Every size; refused when seconds times 24 fps is not a multiple of it) → 202 `{job}` (with `smooth` on, the render uses `--interp-backend rife` when the RIFE model file and onnxruntime are present in the render python, else `linear`; `GET /api/render/status` then has `smooth: {factor, backend}` and `clip.json` has `interp`); 409 while one runs; 400 with a plain message for any value out of range |
 | `GET /api/render/status` | `{state: idle|running|done|error, frame, frames, message, clip}` |
 | `GET /api/clips` | recent clips, newest first, at most 20: `[{name, made, seconds, size, preset, mp4, gif}]` |
 | `GET /clips/<dir>/preview.mp4` and `/preview.gif` | the file; `?download=1` adds `Content-Disposition: attachment` |

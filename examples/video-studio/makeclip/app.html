@@ -106,6 +106,14 @@ ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
         <span id="layers-note" class="muted"></span>
       </div>
       <div class="field">
+        <label for="smooth">Smooth motion</label>
+        <select id="smooth">
+          <option value="0">Off</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="aspect">Picture shape</label>
         <select id="aspect">
           <option value="crop">Crop to fill</option>
@@ -134,6 +142,7 @@ ul.clips li { border-bottom: 1px solid var(--line); padding: 8px 0; }
       </div>
       <video id="video" controls hidden></video>
       <p id="fit-note" class="muted" hidden></p>
+      <p id="smooth-result" class="muted" hidden></p>
       <div id="downloads" class="row" hidden style="margin-top: 12px;">
         <a id="dl-mp4" class="button" href="#">Download MP4</a>
         <a id="dl-gif" class="button" href="#">Download GIF</a>
@@ -446,6 +455,15 @@ function showFitNote(id, notes) {
   $(id).hidden = list.length === 0;
 }
 
+// Which interpolation Smooth used: the RIFE model when it is installed, else the plain blend.
+function showSmoothResult(smooth) {
+  const on = !!(smooth && smooth.factor);
+  $("smooth-result").textContent = on
+    ? "Smooth " + smooth.factor + "x, " + (smooth.backend === "rife" ? "RIFE model" : "linear blend") + "."
+    : "";
+  $("smooth-result").hidden = !on;
+}
+
 function showEvery(clip, files, zip, notes) {
   const box = $("every");
   box.innerHTML = "";
@@ -558,6 +576,7 @@ async function checkStatus() {
       $("progress-wrap").hidden = true;
       if (status.files) showEvery(status.clip, status.files, status.zip, status.notes);
       else showClip(status.clip, status.notes);
+      showSmoothResult(status.smooth);
       say("Your clip is ready.", "ok");
     }
     loadClips();
@@ -596,6 +615,7 @@ async function makeClip() {
     seconds: Number($("seconds").value),
     size: $("size").value,
     layers: $("layers").checked,
+    smooth: Number($("smooth").value),
     aspect: $("aspect").value,
     depth: $("depth-real").checked ? "real" : "simple",
   };
@@ -603,6 +623,7 @@ async function makeClip() {
   $("video").hidden = true;
   $("every").hidden = true;
   $("fit-note").hidden = true;
+  $("smooth-result").hidden = true;
   $("downloads").hidden = true;
   say("Starting…", "muted");
   try {

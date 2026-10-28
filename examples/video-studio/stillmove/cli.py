@@ -54,6 +54,22 @@ def _print_fit_note(record):
         print(f"note: {record['note']}", file=sys.stderr)
 
 
+def _render_shape(args, cams, out, matte, center):
+    """One shape of --sizes: a plain render, or an interpolated one with --smooth or --slowmo (its manifest
+    gets an interp block, as for a single render)."""
+    backend = get_backend(args.backend)
+    if args.smooth or args.slowmo:
+        from stillmove import interp
+
+        factor, mode = (args.smooth, "smooth") if args.smooth else (args.slowmo, "slowmo")
+        return interp.render_interpolated(args.image, cams, backend, out, factor, mode,
+                                          interp_backend=args.interp_backend, mp4=args.mp4, matte=matte,
+                                          fg_depth=args.fg_depth, fit_margin=_fit_margin(args),
+                                          aspect=args.aspect, center=center)
+    return render(args.image, cams, backend, out, mp4=args.mp4, matte=matte, fg_depth=args.fg_depth,
+                  fit_margin=_fit_margin(args), aspect=args.aspect, center=center)
+
+
 def _render_sizes(args):
     """stillmove render --sizes: the same move cropped to each shape, into OUT/<id>/, zipped to OUT/sizes.zip."""
     import zipfile
@@ -87,9 +103,7 @@ def _render_sizes(args):
             else:
                 cams = cameras.retarget(base, width, height)
             out = os.path.join(args.out, sid)
-            manifest = render(args.image, cams, get_backend(args.backend), out, mp4=args.mp4, matte=matte,
-                              fg_depth=args.fg_depth, fit_margin=_fit_margin(args), aspect=args.aspect,
-                              center=center)
+            manifest = _render_shape(args, cams, out, matte, center)
             preview = manifest["mp4"] or os.path.join(out, PREVIEW)
             ext = os.path.splitext(preview)[1].lstrip(".")
             archive.write(os.path.join(out, os.path.basename(preview)), arcname=f"{sid}.{ext}")
@@ -106,6 +120,8 @@ def _cmd_render(args):
         raise ValueError("--seconds must be greater than 0")
     if args.fps <= 0:
         raise ValueError("--fps must be greater than 0")
+    if args.smooth and args.slowmo:
+        raise ValueError("give --smooth or --slowmo, not both")
     if args.sizes:
         return _render_sizes(args)
     width, height = _image_size(args.image)  # an unreadable image fails before any warning
@@ -126,15 +142,32 @@ def _cmd_render(args):
         from stillmove.matte import get_matte
 
         matte = get_matte(args.matte)
-    manifest = render(args.image, cams, get_backend(args.backend), args.out, mp4=args.mp4,
-                      report=args.photo_report, matte=matte, fg_depth=args.fg_depth,
-                      fit_margin=_fit_margin(args), aspect=args.aspect)
+    if args.smooth or args.slowmo:
+        from stillmove import interp
+
+        factor, mode = (args.smooth, "smooth") if args.smooth else (args.slowmo, "slowmo")
+        manifest = interp.render_interpolated(args.image, cams, get_backend(args.backend), args.out, factor,
+                                              mode, interp_backend=args.interp_backend, mp4=args.mp4,
+                                              matte=matte, fg_depth=args.fg_depth, fit_margin=_fit_margin(args),
+                                              aspect=args.aspect)
+    else:
+        manifest = render(args.image, cams, get_backend(args.backend), args.out, mp4=args.mp4,
+                          report=args.photo_report, matte=matte, fg_depth=args.fg_depth,
+                          fit_margin=_fit_margin(args), aspect=args.aspect)
     print(f"wrote {len(manifest['frames'])} frames to {args.out}")
     _print_fit_note(manifest["fit"])
     if manifest.get("note"):
         print(f"note: {manifest['note']}", file=sys.stderr)
     if args.photo_report:
         _print_report(manifest["report"])
+    return 0
+
+
+def _cmd_interp(args):
+    from stillmove import interp
+
+    manifest = interp.interp_folder(args.frames, args.factor, args.out, backend_name=args.backend, fps=args.fps)
+    print(f"wrote {len(manifest['frames'])} frames to {args.out}")
     return 0
 
 
@@ -225,6 +258,12 @@ def _build_parser():
     p_render.add_argument("--fps", type=int, default=24)
     p_render.add_argument("--backend", default="plane", help="depth backend: plane, gradient (fakes) or da2-small (Depth Anything V2 Small, needs onnxruntime)")
     p_render.add_argument("--mp4", action="store_true", help="also write preview.mp4 if ffmpeg is on PATH")
+    p_render.add_argument("--smooth", type=int, choices=(2, 4), metavar="N",
+                          help="render at fps / N, then interpolate N times: the same duration, smoother motion")
+    p_render.add_argument("--slowmo", type=int, choices=(2, 4), metavar="N",
+                          help="render at fps, then interpolate N times: the same fps, so it plays N times longer")
+    p_render.add_argument("--interp-backend", default="linear", choices=("linear", "rife"),
+                          help="frame interpolation for --smooth and --slowmo: linear (a blend) or rife (midpoint model, 2x and 4x)")
     p_render.add_argument("--aspect", choices=("crop", "pad"), default="crop",
                           help="a picture whose shape differs from the camera's: crop to fill the frame (default) "
                                "or pad it with borders")
@@ -277,6 +316,15 @@ def _build_parser():
     p_matte.add_argument("-o", "--out", required=True, metavar="MASK.PNG", help="output mask file")
     p_matte.set_defaults(handler=_cmd_matte)
 
+    p_interp = sub.add_parser("interp", help="interpolate a folder of frames: more in-between frames")
+    p_interp.add_argument("frames", metavar="FRAMES_DIR", help="folder of NNNN.png frames, in order")
+    p_interp.add_argument("--factor", type=int, choices=(2, 4), default=2,
+                          help="how many steps between each pair of frames (default 2)")
+    p_interp.add_argument("--backend", default="linear", choices=("linear", "rife"),
+                          help="linear (a blend, no model) or rife (midpoint model, 2x and 4x)")
+    p_interp.add_argument("--fps", type=int, default=24, help="fps written to the preview and manifest (default 24)")
+    p_interp.add_argument("-o", "--out", required=True, metavar="OUTDIR", help="output folder")
+    p_interp.set_defaults(handler=_cmd_interp)
     p_presets = sub.add_parser("presets", help="list camera-motion presets")
     p_presets.set_defaults(handler=_cmd_presets)
 

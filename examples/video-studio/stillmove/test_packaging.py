@@ -22,7 +22,7 @@ class PyprojectTests(unittest.TestCase):
     def test_one_project_named_video_studio_with_mit_licence(self):
         text = _text()
         self.assertRegex(text, r'(?m)^name = "video-studio"$')
-        self.assertRegex(text, r'(?m)^version = "0\.2\.2"$')
+        self.assertRegex(text, r'(?m)^version = "0\.3\.0"$')
         self.assertRegex(text, r'(?m)^license = \{text = "MIT"\}$')
         self.assertRegex(text, r'(?m)^requires-python = ">=3\.9"$')
 
