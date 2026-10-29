@@ -116,14 +116,27 @@ split() { # pane direction new-pane-share cwd [env] -> new pane id
   hd pane split "$1" --direction "$2" --ratio "$keep" --cwd "$4" ${5:+--env "$5"} --no-focus | jq -r '.result.pane.pane_id'
 }
 
-# Each agent's pane gets its own secret (STUDIO_SEAL, passed as herdr --env) so `studio send` can sign
-# messages; only the router pane gets the whole map (STUDIO_TOKENS). Neither is
-# written to disk, so an agent cannot read another agent's token from a file.
+# Seals: every agent signs its messages with its own token.
+# A claude role gets STUDIO_SEAL in its pane (herdr --env), and the router pane holds the map of
+# those tokens (STUDIO_TOKENS). A codex role gets no env at all: codex runs commands through a
+# shared daemon whose environment can be stale (an old pane's seal), and a token in argv or in
+# scrollback is a leak. Its token is written to .studio/seals/<name> (folder 0700, file 0600) and
+# the router reads it from there; `studio send` signs with that file when codex is the caller.
+# The reviewer never gets a seal file: it keeps its token in the router's map only.
 new_token() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 TOKENS_JSON='{}'
 issue_token() { # name -> sets TOKEN and remembers it for the router (no subshell: the map must survive)
   TOKEN=$(new_token)
   TOKENS_JSON=$(printf '%s' "$TOKENS_JSON" | jq -c --arg n "$1" --arg t "$TOKEN" '. + {($n): $t}')
+}
+issue_seal() { # name kind -> sets TOKEN and SEAL_ENV (the pane's env: empty for a codex role)
+  issue_token "$1"
+  SEAL_ENV="STUDIO_SEAL=$TOKEN"
+  if [ "$2" = codex ]; then
+    (umask 077; printf '%s\n' "$TOKEN" > "$STUDIO_DIR/seals/$1")
+    TOKENS_JSON=$(printf '%s' "$TOKENS_JSON" | jq -c --arg n "$1" 'del(.[$n])')
+    SEAL_ENV=''
+  fi
 }
 
 # --- Agents --------------------------------------------------------------------
@@ -489,27 +502,30 @@ fit_workers() {
 #  └──────────────┴──────────────┘
 # With --reviewer, the reviewer sits under the last worker (or under main with no workers).
 layout() {
-  local ws team col router pane next n=1 left TOKEN board wk wm
-  issue_token "$PROJECT_SLUG-architect"
+  local ws team col router pane next n=1 left TOKEN SEAL_ENV board wk wm
+  # Each up starts with fresh seals: the old files go, and codex roles get new ones.
+  rm -rf "$STUDIO_DIR/seals"; mkdir -p "$STUDIO_DIR/seals"; chmod 700 "$STUDIO_DIR/seals"
+  issue_seal "$PROJECT_SLUG-architect" "$KIND_ARCH"
   # The workspace's --env reaches its root pane only (probed on herdr 0.9.5: a later
   # tab and a split both saw it unset), so this token stays in the architect's pane.
   # shellcheck disable=SC2046
-  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
+  set -- $(new_workspace "$WS_LABEL" "$PROJECT_DIR" "$SEAL_ENV")
   ws=$1; team=$2
   hd tab rename "$ws:t1" team >/dev/null 2>&1 || true
   board=$(new_tab "$ws" board "$PROJECT_DIR")
   start_pane_cmd "$board" "board" "$(printf %q "$STUDIO_HOME/bin/studio") board $(printf %q "$PROJECT_DIR")"
-  issue_token "$PROJECT_SLUG-main"
-  col=$(split "$team" right 0.45 "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
+  issue_seal "$PROJECT_SLUG-main" "$KIND_MAIN"
+  col=$(split "$team" right 0.45 "$PROJECT_DIR" "$SEAL_ENV")
   write_peers
   start_agent "$team" "architect · $ARCH_M · $KIND_ARCH" architect "$PROJECT_SLUG-architect" "$ARCH_M" "$KIND_ARCH"
   start_agent "$col" "main · $MAIN_M · $KIND_MAIN" main "$PROJECT_SLUG-main" "$MAIN_M" "$KIND_MAIN"
   pane=$col
   while [ $n -le "$WORKERS" ]; do
     left=$((WORKERS - n + 1))
-    issue_token "$PROJECT_SLUG-worker-$n"
-    next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
-    wk=$(worker_kind "$n"); wm=$(model_for "$wk" worker)
+    wk=$(worker_kind "$n")
+    issue_seal "$PROJECT_SLUG-worker-$n" "$wk"
+    next=$(split "$pane" down "$(awk -v l="$left" 'BEGIN{printf "%.2f", l/(l+1)}')" "$PROJECT_DIR" "$SEAL_ENV")
+    wm=$(model_for "$wk" worker)
     start_agent "$next" "worker-$n · $wm · $wk" worker "$PROJECT_SLUG-worker-$n" "$wm" "$wk" "worker-$n"
     pane=$next
     n=$((n + 1))
@@ -1064,13 +1080,27 @@ cmd_doctor() {
   return $bad
 }
 
+# Stopping ends every agent, so no seal may stay on disk: remove each project's .studio/seals
+# (the last project opened, the studio's home, and project folders under the projects folder).
+clear_seals() {
+  local d
+  [ -n "${LAST_PROJECT:-}" ] && rm -rf -- "$LAST_PROJECT/.studio/seals"
+  for d in "$PROJECTS_DIR" "$STUDIO_WORKSPACE"; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 3 -type d -path '*/.studio/seals' 2>/dev/null | while read -r s; do rm -rf -- "$s"; done
+  done
+  return 0
+}
+
 cmd_stop() {
   printf 'Stop the studio and every agent in it? [y/N] '
   read -r a
   case $a in
     y|Y|yes)
       launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1 || true   # or KeepAlive brings it straight back
-      hd server stop >/dev/null 2>&1; ok "Studio stopped." ;;
+      hd server stop >/dev/null 2>&1
+      clear_seals
+      ok "Studio stopped." ;;
     *) say "Left running." ;;
   esac
 }

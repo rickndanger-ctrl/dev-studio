@@ -433,12 +433,16 @@ printf 'SOUNDS=0\nCODEX_SANDBOX=danger-full-access\n' > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --workers-mixed
 check "codex worker gets --sandbox from config" has "worktrees/worker-1 && codex -m gpt-6.1-sol --sandbox danger-full-access"
 check "claude agents never get --sandbox"    sh -c "! grep 'claude --name' '$MOCK_LOG' | grep -q -- '--sandbox'"
-check "each agent's pane gets its seal as --env" test "$(grep -c -- '--env STUDIO_SEAL=' "$MOCK_LOG")" = 4
-ARCH_SEAL=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//' | jq -r '.["omac-architect"]')
-W1_SEAL=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//' | jq -r '.["omac-worker-1"]')
+check "claude panes get their seal as --env (3 of 4)" test "$(grep -c -- '--env STUDIO_SEAL=' "$MOCK_LOG")" = 3
 TOKENS=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//')
+ARCH_SEAL=$(jq -r '.["omac-architect"]' <<<"$TOKENS")
+W2_SEAL=$(jq -r '.["omac-worker-2"]' <<<"$TOKENS")
+W1_SEAL=$(cat "$PROJECT/.studio/seals/omac-worker-1")
 check "architect's seal is its own token"    has "--env STUDIO_SEAL=$ARCH_SEAL"
-check "codex worker's seal is its own token" has "--env STUDIO_SEAL=$W1_SEAL"
+check "codex worker's seal is in its own file" test "$(ls "$PROJECT/.studio/seals")" = omac-worker-1
+check "the seal folder is 0700"              python3 -c 'import os,sys; sys.exit(0 if oct(os.stat(sys.argv[1]).st_mode & 0o777) == "0o700" else 1)' "$PROJECT/.studio/seals"
+check "the seal file is 0600"                python3 -c 'import os,sys; sys.exit(0 if oct(os.stat(sys.argv[1]).st_mode & 0o777) == "0o600" else 1)' "$PROJECT/.studio/seals/omac-worker-1"
+check "the codex seal never reaches the mock herdr log" sh -c "! grep -qF -- '$W1_SEAL' '$MOCK_LOG'"
 check "no token is typed into a pane"        env TOKENS_JSON="$TOKENS" MOCK_LOG="$MOCK_LOG" python3 -c '
 import json, os
 toks = list(json.loads(os.environ["TOKENS_JSON"]).values())
@@ -446,9 +450,14 @@ for line in open(os.environ["MOCK_LOG"]):
     if any(t in line for t in toks) and "--env " not in line:
         raise SystemExit(1)
 '
-(cd "$PROJECT" && STUDIO_SEAL=$W1_SEAL "$ROOT/bin/studio" send omac-worker-1 @omac-architect "signed with the seal only")
+# A stale STUDIO_SEAL (an old pane's) must not sign for a codex caller: its file wins.
+(cd "$PROJECT" && CODEX_THREAD_ID=t1 STUDIO_SEAL=0123456789abcdef0123456789abcdef "$ROOT/bin/studio" send omac-worker-1 @omac-architect "codex with a stale env")
+(cd "$PROJECT" && STUDIO_SEAL=0123456789abcdef0123456789abcdef "$ROOT/bin/studio" send omac-worker-1 @omac-architect "no codex env, stale seal")
+(cd "$PROJECT" && STUDIO_SEAL=$W2_SEAL "$ROOT/bin/studio" send omac-worker-2 @omac-architect "claude path signs with env")
 STUDIO_TOKENS=$TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
-check "a seal-signed message is verified"    grep -q '"text": "signed with the seal only".*"verified": true' "$PROJECT/.studio/router.log"
+check "codex caller with a stale env is verified by its file" grep -q '"text": "codex with a stale env".*"verified": true' "$PROJECT/.studio/router.log"
+check "without codex env the stale seal is refused"  grep -q '"text": "no codex env, stale seal".*"verified": false' "$PROJECT/.studio/router.log"
+check "claude caller still signs with its env seal"  grep -q '"text": "claude path signs with env".*"verified": true' "$PROJECT/.studio/router.log"
 chmod 555 "$PROJECT/.studio/mail/outbox"
 rc=0
 err=$( (cd "$PROJECT" && "$ROOT/bin/studio" send omac-worker-1 auto "cannot write") 2>&1 ) || rc=$?
@@ -692,6 +701,28 @@ STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up Trusty --no-attach --codex --revie
 check "codex team + claude reviewer runs the trust step" jq -e --arg p "$HOME/Developer/Trusty" '.projects[$p].hasTrustDialogAccepted == true' "$HOME/.claude.json"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up Plain --no-attach --codex --reviewer none
 check "codex team with no claude role skips the trust step" sh -c "! jq -e --arg p '$HOME/Developer/Plain' '.projects[\$p].hasTrustDialogAccepted == true' '$HOME/.claude.json' >/dev/null"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+
+echo "Seals: a file per codex role, none for claude roles or the reviewer; up clears; stop removes"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex --reviewer codex
+check "codex team: a seal file per codex role" test "$(ls "$PROJECT/.studio/seals" | wc -l | tr -d ' ')" = 4
+check "codex team: the reviewer gets no seal file" test ! -e "$PROJECT/.studio/seals/omac-reviewer"
+check "codex team: seal files are 0600"      python3 -c 'import os,sys; sys.exit(0 if all(oct(os.stat(os.path.join(sys.argv[1], f)).st_mode & 0o777) == "0o600" for f in os.listdir(sys.argv[1])) else 1)' "$PROJECT/.studio/seals"
+check "codex team: no env seal in any pane"  sh -c "! grep -q -- '--env STUDIO_SEAL=' '$MOCK_LOG'"
+check "codex team: codex tokens are not in the router env" sh -c "! grep -- '--env STUDIO_TOKENS' '$MOCK_LOG' | grep -q 'omac-architect\|omac-worker-1'"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'x\n' > "$PROJECT/.studio/seals/omac-stale" 2>/dev/null || { mkdir -p "$PROJECT/.studio/seals"; printf 'x\n' > "$PROJECT/.studio/seals/omac-stale"; }
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --reviewer codex
+check "claude team + codex reviewer: no seal files at all" test -z "$(ls -A "$PROJECT/.studio/seals")"
+check "a fresh up clears an old seal file"   test ! -e "$PROJECT/.studio/seals/omac-stale"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
+printf 'y\n' | "$ROOT/bin/studio" stop >/dev/null 2>&1 || true
+check "studio stop removes the seal folder"  test ! -e "$PROJECT/.studio/seals"
 printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 
 echo "Mixed-team guide: every flag it names exists, and the README links it"

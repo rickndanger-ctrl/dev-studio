@@ -83,13 +83,11 @@ def cmd_send(a):
     text = text.strip()
     if not text:
         sys.exit("studio send: empty message")
-    # Sign the message with this pane's secret, set at launch as STUDIO_SEAL (herdr
-    # --env; codex hides *TOKEN* variables, so the name avoids it). STUDIO_TOKEN is
-    # read too. The router holds every token and checks the signature, so one agent
-    # cannot speak as another. A message without a valid signature is still
-    # delivered, but marked UNVERIFIED.
+    # Sign the message with this agent's seal. The router holds every token and checks the
+    # signature, so one agent cannot speak as another. A message without a valid signature is
+    # still delivered, but marked UNVERIFIED.
     msg = {"id": uuid.uuid4().hex[:8], "t": now(), "from": a.sender, "to": a.to.lstrip("@"), "text": text, "tries": 0}
-    token = os.environ.get("STUDIO_SEAL") or os.environ.get("STUDIO_TOKEN") or ""
+    token = sender_token(a.studio, a.sender)
     if token:
         msg["sig"] = sign(token, msg)
     tmp = None
@@ -124,6 +122,39 @@ def tokens_from_env():
         return json.loads(os.environ.get("STUDIO_TOKENS", "") or "{}")
     except ValueError:
         return {}
+
+
+def tokens_from_seals(studio_dir):
+    """Name -> token for the codex roles, one seal file each under <studio>/seals (see bin/studio)."""
+    folder = os.path.join(studio_dir, "seals")
+    out = {}
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for name in names:
+        if NAME_RE.fullmatch(name):
+            try:
+                with open(os.path.join(folder, name)) as f:
+                    out[name] = f.read().strip()
+            except OSError:
+                pass
+    return out
+
+
+def sender_token(studio_dir, sender):
+    """The token a message from `sender` is signed with. A codex agent's commands run in a shared
+    daemon whose environment can be stale (an old pane's seal), so when codex is the caller, the
+    agent's own seal file wins over any environment variable."""
+    if (os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED")) and NAME_RE.fullmatch(sender):
+        try:
+            with open(os.path.join(studio_dir, "seals", sender)) as f:
+                token = f.read().strip()
+            if token:
+                return token
+        except OSError:
+            pass
+    return os.environ.get("STUDIO_SEAL") or os.environ.get("STUDIO_TOKEN") or ""
 
 
 # --- judging -----------------------------------------------------------------
@@ -471,10 +502,11 @@ def cmd_daemon(a):
     print("studio router · %s · watching %s" % (ROUTER, s.outbox), flush=True)
     last_health = now()
     handled = 0
-    tokens = tokens_from_env()
-    if not tokens:
-        s.write_log({"kind": "warn", "note": "no STUDIO_TOKENS in the router's environment: every message will show as UNVERIFIED"})
+    if not (tokens_from_env() or tokens_from_seals(s.dir)):
+        s.write_log({"kind": "warn", "note": "no tokens (STUDIO_TOKENS or seals): every message will show as UNVERIFIED"})
     while True:
+        # Claude roles' tokens come from the router's environment, codex roles' from their seal files.
+        tokens = dict(tokens_from_env(), **tokens_from_seals(s.dir))
         peers = s.peers()
         table = agent_table(a.herdr)
         statuses = {n: t["status"] for n, t in table.items()}

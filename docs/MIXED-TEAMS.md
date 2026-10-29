@@ -101,6 +101,16 @@ reviewer runs in plan mode, which asks before any change, and it still never edi
 has no way to send messages itself; the studio relays its verdict. Starting a team without the flag
 (or with `--reviewer none`) starts no reviewer.
 
+## How each helper signs its messages
+
+Every helper signs what it sends, so the router can tell who really wrote a message. A Claude
+helper keeps its secret in its own pane. A Codex helper's secret is kept in a file instead:
+`.studio/seals/<name>` inside the project's studio folder. That folder is private (readable only
+by your user account), the file is rewritten each time you start the team, and the reviewer never
+gets one. Codex runs its commands in a shared background process whose environment can still hold
+an old pane's secret, so when Codex sends a message the studio reads its file and ignores the
+environment. Stopping the studio deletes these files.
+
 ## Settings in ~/.dev-studio/studio.conf
 
 Open the file in any text editor. These lines control the Codex side and the reviewer:
