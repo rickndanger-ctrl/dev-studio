@@ -77,14 +77,40 @@ studio status
 It lists each role and the tool it runs. The board's title shows the kind of team: a Claude team,
 a Codex team, or a **MIXED** team.
 
+## Reviewer
+
+A **reviewer** is an optional extra agent that reads each finished piece of work before you merge
+it. It never edits code. When a worker reports `done <commit>`, the studio asks the reviewer to read
+that commit and reply with one of three verdicts, which the architect receives:
+
+- `REVIEW <commit>: PASS` means nothing needs fixing.
+- `REVIEW <commit>: CHANGES` means there are fixable findings, listed in the same message.
+- `REVIEW <commit>: BLOCK` means the change must not land as it is.
+
+If the reviewer does not answer in time, the architect gets `REVIEW <commit>: TIMEOUT` instead.
+Nothing waits for the reviewer; the team keeps working.
+
+Turn it on with the flag, which accepts `codex`, `claude` or `none` (the default):
+
+```bash
+studio up --reviewer codex
+```
+
+A codex reviewer always runs with a read-only sandbox, whatever `CODEX_SANDBOX` says. A claude
+reviewer runs in plan mode, which asks before any change, and it still never edits. The reviewer
+has no way to send messages itself; the studio relays its verdict. Starting a team without the flag
+(or with `--reviewer none`) starts no reviewer.
+
 ## Settings in ~/.dev-studio/studio.conf
 
-Open the file in any text editor. These lines control the Codex side:
+Open the file in any text editor. These lines control the Codex side and the reviewer:
 
 - `CODEX_WORKER_MODEL` picks the model Codex workers use. You can point it at a cheaper model from
   your Codex plan for routine jobs.
 - `CODEX_SANDBOX` picks the Codex sandbox (the limits on what Codex may write). Leave it blank to
   use Codex's own default.
+- `REVIEWER=codex` (or `claude`) starts a reviewer on every team, as `--reviewer` does. Leave it at
+  `none` for no reviewer. The `--reviewer` flag overrides this line for one team.
 
 Restart the team after changing these (see below).
 

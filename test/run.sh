@@ -456,6 +456,86 @@ chmod 755 "$PROJECT/.studio/mail/outbox"
 check "send exits 1 when the outbox is read-only" test "$rc" = 1
 check "send names the codex sandbox"         grep -q "codex sandbox" <<<"$err"
 
+echo "Reviewer: off by default, set by studio.conf, the flag wins, bad values fail"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "no conf gives no reviewer"            jq -e '.reviewer == "none"' "$PROJECT/.studio/team.json"
+check "no reviewer in peers without one"     jq -e 'has("omac-reviewer") | not' "$PROJECT/.studio/peers.json"
+check "no reviewer pane started"             sh -c "! grep -q 'omac-reviewer' '$MOCK_LOG'"
+
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\nREVIEWER=codex\nCODEX_SANDBOX=workspace-write\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach
+check "conf codex gives a reviewer"          jq -e '.reviewer == "codex"' "$PROJECT/.studio/team.json"
+check "reviewer is in peers as codex"        jq -e '.["omac-reviewer"].kind == "codex"' "$PROJECT/.studio/peers.json"
+check "reviewer runs codex read-only"        sh -c "grep -F 'omac-reviewer.md' '$MOCK_LOG' | grep -q 'codex -m gpt-6.1-sol --sandbox read-only'"
+check "reviewer ignores CODEX_SANDBOX"       sh -c "! grep -F 'omac-reviewer.md' '$MOCK_LOG' | grep -q 'workspace-write'"
+check "reviewer gets no outbox grant"        sh -c "! grep -F 'omac-reviewer.md' '$MOCK_LOG' | grep -q -- '--add-dir'"
+check "reviewer starts in the project"       sh -c "grep -F 'omac-reviewer.md' '$MOCK_LOG' | grep -q 'cd $PROJECT && codex'"
+
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --reviewer none
+check "flag none beats conf codex"           jq -e '.reviewer == "none"' "$PROJECT/.studio/team.json"
+check "no reviewer pane with flag none"      sh -c "! grep -q 'omac-reviewer' '$MOCK_LOG'"
+
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --reviewer claude
+check "flag claude beats conf codex"         jq -e '.reviewer == "claude"' "$PROJECT/.studio/team.json"
+check "claude reviewer runs in plan mode"    has "claude --name omac-reviewer --model haiku --permission-mode plan"
+
+printf 'SOUNDS=0\nREVIEWER=gpt\n' > "$STUDIO_CONF"
+bad_rc=0; bad_out=$(STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach 2>&1) || bad_rc=$?
+check "bad conf reviewer is refused"         test "$bad_rc" = 1
+check "refusal names the bad value"          grep -q "Unknown reviewer 'gpt'" <<<"$bad_out"
+bad_rc=0; bad_out=$(STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --reviewer bogus 2>&1) || bad_rc=$?
+check "bad flag reviewer is refused"         test "$bad_rc" = 1
+check "flag refusal names the bad value"     grep -q "Unknown reviewer 'bogus'" <<<"$bad_out"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+
+echo "Reviewer: a worker's done note starts one review; the verdict reaches the architect"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\nREVIEWER=codex\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --router rules
+RV_TOKENS=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//')
+W1TOKEN=$(jq -r '.["omac-worker-1"]' <<<"$RV_TOKENS")
+printf 'review me\n' > "$PROJECT/review-me.txt"
+git -C "$PROJECT" add review-me.txt
+git -C "$PROJECT" -c user.name=test -c user.email=test@example.com commit -q -m "job: add review-me"
+COMMIT=$(git -C "$PROJECT" rev-parse --short=7 HEAD)
+RV_REPLY=$T/reply.txt; RV_PANE=$T/pane.txt
+printf '1. src is fine\nREVIEW %s: CHANGES\n' "$COMMIT" > "$RV_REPLY"
+rm -f "$RV_PANE"
+export MOCK_PANE=$RV_PANE MOCK_REPLY=$RV_REPLY STUDIO_REVIEW_TIMEOUT=20 STUDIO_REVIEW_POLL=1
+(cd "$PROJECT" && STUDIO_TOKEN=$W1TOKEN "$ROOT/bin/studio" send omac-worker-1 @omac-architect "done $COMMIT")
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "router starts one review for done"    grep -q "\"kind\": \"review\".*\"commit\": \"$COMMIT\"" "$PROJECT/.studio/router.log"
+i=0; while [ $i -lt 30 ] && ! grep -qs "REVIEW $COMMIT: CHANGES" "$PROJECT"/.studio/mail/outbox/*.json; do sleep 1; i=$((i + 1)); done
+check "verdict is queued to the architect"   grep -qs "\"to\": \"omac-architect\"" "$PROJECT"/.studio/mail/outbox/*.json
+check "verdict carries the findings"         grep -qs "1. src is fine" "$PROJECT"/.studio/mail/outbox/*.json
+check "reviewer's verdict is signed"         grep -qs '"sig"' "$PROJECT"/.studio/mail/outbox/*.json
+check "reviewer prompt names the commit"     has "agent prompt omac-reviewer Review commit $COMMIT"
+: > "$MOCK_LOG"
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "router verifies the reviewer's relay" grep -q '"from": "omac-reviewer".*"verified": true' "$PROJECT/.studio/router.log"
+check "architect gets it from the reviewer"  has "agent prompt omac-architect [studio relay · from @omac-reviewer] REVIEW $COMMIT: CHANGES"
+(cd "$PROJECT" && "$ROOT/bin/studio" send omac-worker-2 @omac-architect "done 1234567")
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "unsigned done note starts no review"  test "$(grep -c '"kind": "review"' "$PROJECT/.studio/router.log")" = 1
+
+echo "Reviewer: studio review checks its input and always relays a verdict"
+check "review refuses a non-hash"            sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review not-a-hash >/dev/null 2>&1)"
+(cd "$PROJECT" && "$ROOT/bin/studio" review 0000000 >/dev/null 2>&1) || true
+check "a missing commit is relayed as BLOCK" grep -qs "REVIEW 0000000: BLOCK" "$PROJECT"/.studio/mail/outbox/*.json
+unset MOCK_REPLY
+export MOCK_PANE=$T/silent.txt; rm -f "$MOCK_PANE"
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=2 STUDIO_REVIEW_POLL=1 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+check "silence is relayed as TIMEOUT"        grep -qs "REVIEW $COMMIT: TIMEOUT" "$PROJECT"/.studio/mail/outbox/*.json
+jq '.reviewer = "none"' "$PROJECT/.studio/team.json" > "$T/team-none.json" && cp "$T/team-none.json" "$PROJECT/.studio/team.json"
+check "review refuses a team with no reviewer" sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review '$COMMIT' >/dev/null 2>&1)"
+unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_TIMEOUT STUDIO_REVIEW_POLL
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+
 echo "Mixed-team guide: every flag it names exists, and the README links it"
 usage_text=$("$ROOT/bin/studio" help 2>&1)
 guide_flags=$(grep -o -- '--[a-z][a-z-]*' "$ROOT/docs/MIXED-TEAMS.md" | sort -u)
