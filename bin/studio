@@ -133,10 +133,31 @@ issue_seal() { # name kind -> sets TOKEN and SEAL_ENV (the pane's env: empty for
   issue_token "$1"
   SEAL_ENV="STUDIO_SEAL=$TOKEN"
   if [ "$2" = codex ]; then
-    (umask 077; printf '%s\n' "$TOKEN" > "$STUDIO_DIR/seals/$1")
+    seal_write "$1" "$TOKEN"
     TOKENS_JSON=$(printf '%s' "$TOKENS_JSON" | jq -c --arg n "$1" 'del(.[$n])')
     SEAL_ENV=''
   fi
+}
+seal_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; } # Linux, then macOS
+# The seal folder must exist, be empty of old seals, and be private, before any agent is launched.
+seal_dir_ready() {
+  local d="$STUDIO_DIR/seals"
+  rm -rf "$d" || die "Couldn't clear the old seals in $d. The team was not started."
+  mkdir -p "$d" && chmod 700 "$d" && [ "$(seal_mode "$d")" = 700 ] \
+    || die "Couldn't make the seal folder $d private. The team was not started."
+}
+# One codex seal file: written private (umask 077, mode 600) or the studio refuses to start the team.
+seal_write() { # name token
+  local f="$STUDIO_DIR/seals/$1"
+  { (umask 077; printf '%s\n' "$2" > "$f") && [ "$(seal_mode "$f")" = 600 ]; } 2>/dev/null \
+    || die "Couldn't write a private seal for $1 at $f. The team was not started."
+  record_seal_project
+}
+# Remember each project that got seal files, so `studio stop` cleans exactly those.
+record_seal_project() {
+  local list="$STUDIO_DATA/run/seal-projects"
+  mkdir -p "$STUDIO_DATA/run" && { grep -qxF "$PROJECT_DIR" "$list" 2>/dev/null || printf '%s\n' "$PROJECT_DIR" >> "$list"; } \
+    || die "Couldn't record the seal folder for $PROJECT_DIR, so stop could not clean it. The team was not started."
 }
 
 # --- Agents --------------------------------------------------------------------
@@ -504,7 +525,7 @@ fit_workers() {
 layout() {
   local ws team col router pane next n=1 left TOKEN SEAL_ENV board wk wm
   # Each up starts with fresh seals: the old files go, and codex roles get new ones.
-  rm -rf "$STUDIO_DIR/seals"; mkdir -p "$STUDIO_DIR/seals"; chmod 700 "$STUDIO_DIR/seals"
+  seal_dir_ready
   issue_seal "$PROJECT_SLUG-architect" "$KIND_ARCH"
   # The workspace's --env reaches its root pane only (probed on herdr 0.9.5: a later
   # tab and a split both saw it unset), so this token stays in the architect's pane.
@@ -1080,15 +1101,15 @@ cmd_doctor() {
   return $bad
 }
 
-# Stopping ends every agent, so no seal may stay on disk: remove each project's .studio/seals
-# (the last project opened, the studio's home, and project folders under the projects folder).
+# Stopping ends every agent, so no seal may stay on disk: remove the seal folder of exactly the
+# projects recorded when their seal files were written.
 clear_seals() {
-  local d
-  [ -n "${LAST_PROJECT:-}" ] && rm -rf -- "$LAST_PROJECT/.studio/seals"
-  for d in "$PROJECTS_DIR" "$STUDIO_WORKSPACE"; do
-    [ -d "$d" ] || continue
-    find "$d" -maxdepth 3 -type d -path '*/.studio/seals' 2>/dev/null | while read -r s; do rm -rf -- "$s"; done
-  done
+  local list="$STUDIO_DATA/run/seal-projects" p
+  [ -f "$list" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] && rm -rf -- "$p/.studio/seals"
+  done < "$list"
+  rm -f -- "$list"
   return 0
 }
 

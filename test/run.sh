@@ -4,6 +4,8 @@
 set -eu
 # A studio pane exports its own token. A test must never send as the agent that runs it.
 unset STUDIO_TOKEN STUDIO_SEAL STUDIO_TOKENS
+# Run from codex, the shell carries codex's own markers. The tests must act as a claude or a plain shell.
+unset CODEX_THREAD_ID CODEX_SANDBOX_NETWORK_DISABLED
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d)
 cleanup() { [ -n "${FAKE_PID:-}" ] && kill "$FAKE_PID" 2>/dev/null; rm -rf -- "$T"; }
@@ -723,6 +725,39 @@ printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
 printf 'y\n' | "$ROOT/bin/studio" stop >/dev/null 2>&1 || true
 check "studio stop removes the seal folder"  test ! -e "$PROJECT/.studio/seals"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+
+echo "Seals: a seal signs only for the agent it belongs to; stop cleans only what was recorded"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --workers-mixed
+TOKENS=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//')
+ARCH_SEAL=$(jq -r '.["omac-architect"]' <<<"$TOKENS")
+W2_SEAL=$(jq -r '.["omac-worker-2"]' <<<"$TOKENS")
+W1_SEAL=$(cat "$PROJECT/.studio/seals/omac-worker-1")
+(cd "$PROJECT" && STUDIO_SEAL=$ARCH_SEAL "$ROOT/bin/studio" send omac-main @omac-architect "borrowed architect seal")
+(cd "$PROJECT" && STUDIO_SEAL=$W2_SEAL "$ROOT/bin/studio" send omac-worker-1 @omac-architect "borrowed worker-2 seal")
+(cd "$PROJECT" && CODEX_THREAD_ID=t1 STUDIO_SEAL=$W2_SEAL "$ROOT/bin/studio" send omac-worker-1 @omac-architect "codex file beats a borrowed env seal")
+STUDIO_TOKENS=$TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "a claude env seal under another role's name stays unverified" grep -q '"text": "borrowed architect seal".*"verified": false' "$PROJECT/.studio/router.log"
+check "a worker-2 env seal under worker-1's name stays unverified"   grep -q '"text": "borrowed worker-2 seal".*"verified": false' "$PROJECT/.studio/router.log"
+check "a codex caller signs with its own file, not a borrowed env seal" grep -q '"text": "codex file beats a borrowed env seal".*"verified": true' "$PROJECT/.studio/router.log"
+check "the codex file is the worker-1 token"  test -n "$W1_SEAL"
+# A seal folder that cannot be made private stops the launch before any agent is started.
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+chmod 500 "$PROJECT/.studio"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+fail_rc=0; STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex >/dev/null 2>&1 || fail_rc=$?
+chmod 755 "$PROJECT/.studio"
+check "an unprivate seal folder stops the launch" test "$fail_rc" != 0
+check "no workspace is created when seals fail"   sh -c "! grep -q 'workspace create' '$MOCK_LOG'"
+# stop cleans exactly the recorded projects: an unrecorded seal folder is left alone.
+mkdir -p "$HOME/Developer/Ghost/.studio/seals" && printf 'x\n' > "$HOME/Developer/Ghost/.studio/seals/omac-worker-1"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --codex
+printf 'y\n' | "$ROOT/bin/studio" stop >/dev/null 2>&1 || true
+check "stop removes the recorded seal folder"     test ! -e "$PROJECT/.studio/seals"
+check "stop leaves an unrecorded seal folder alone" test -e "$HOME/Developer/Ghost/.studio/seals/omac-worker-1"
 printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 
 echo "Mixed-team guide: every flag it names exists, and the README links it"

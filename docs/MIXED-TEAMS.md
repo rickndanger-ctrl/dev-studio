@@ -109,7 +109,13 @@ helper keeps its secret in its own pane. A Codex helper's secret is kept in a fi
 by your user account), the file is rewritten each time you start the team, and the reviewer never
 gets one. Codex runs its commands in a shared background process whose environment can still hold
 an old pane's secret, so when Codex sends a message the studio reads its file and ignores the
-environment. Stopping the studio deletes these files.
+environment. Stopping the studio deletes the seal folders it made. If a seal folder cannot be made
+private, the studio refuses to start the team.
+
+The seal catches mistakes and stale senders: an old pane's secret, or a message sent under the
+wrong name. It is not a wall between agents. Every helper runs as your user account, so any one of
+them can read another's seal file or pane environment. Real isolation between helpers needs
+separate operating-system users, and this studio does not set that up.
 
 ## Settings in ~/.dev-studio/studio.conf
 

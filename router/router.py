@@ -83,9 +83,11 @@ def cmd_send(a):
     text = text.strip()
     if not text:
         sys.exit("studio send: empty message")
-    # Sign the message with this agent's seal. The router holds every token and checks the
-    # signature, so one agent cannot speak as another. A message without a valid signature is
-    # still delivered, but marked UNVERIFIED.
+    # Sign the message with this agent's seal. The router checks the signature. This catches
+    # mistakes and stale senders (a pane's old secret, a wrong name). It is NOT a wall between
+    # agents: every agent runs as the same OS user, so one agent can read another's seal file
+    # or pane env. Real isolation needs separate OS users. A message without a valid signature
+    # is still delivered, but marked UNVERIFIED.
     msg = {"id": uuid.uuid4().hex[:8], "t": now(), "from": a.sender, "to": a.to.lstrip("@"), "text": text, "tries": 0}
     token = sender_token(a.studio, a.sender)
     if token:
