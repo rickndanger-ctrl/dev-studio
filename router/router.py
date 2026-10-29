@@ -170,7 +170,14 @@ def ask_model(url, key, msg, peers):
 def judge(msg, peers, router=None):
     """Return (decision, evidence). decision: {action, to:[names], note, router}."""
     router = router or ROUTER
-    peers_live = {n: p for n, p in peers.items()}
+    # The reviewer takes review requests only. Auto routing, the model's picks and broadcasts
+    # never see it (a broadcast would type into its pane); a message addressed to it by name still goes through.
+    reviewers = {n for n, p in peers.items() if p.get("role", "").startswith("reviewer")}
+    peers_live = {n: p for n, p in peers.items() if n not in reviewers or n == msg["to"]}
+
+    def broadcast_targets():
+        return [n for n in peers_live if n != msg["from"] and n not in reviewers]
+
     architect = next((n for n, p in peers_live.items() if p.get("role", "").startswith("architect")), None)
     explicit = msg["to"] if msg["to"] != "auto" and msg["to"] in peers_live else None
     ev = {"router": router}
@@ -209,13 +216,13 @@ def judge(msg, peers, router=None):
             if action == "drop" and ac["probabilities"].get("drop", 0) > DROP_P:
                 return {"action": "drop", "to": [], "note": text}, ev
             if action == "broadcast" and ac["probabilities"].get("broadcast", 0) > DROP_P:
-                return {"action": "broadcast", "to": [n for n in peers_live if n != msg["from"]], "note": text}, ev
+                return {"action": "broadcast", "to": broadcast_targets(), "note": text}, ev
             return {"action": "forward", "to": [explicit], "note": text}, ev
         if action == "drop":
             return {"action": "drop", "to": [], "note": text}, ev
         if action == "broadcast":
-            return {"action": "broadcast", "to": [n for n in peers_live if n != msg["from"]], "note": text}, ev
-        if action == "escalate" or wp["confidence"] < PEER_FLOOR or wp["choice"] == "nobody":
+            return {"action": "broadcast", "to": broadcast_targets(), "note": text}, ev
+        if action == "escalate" or wp["confidence"] < PEER_FLOOR or wp["choice"] == "nobody" or wp["choice"] not in peers_live:
             target = architect or next(iter(peers_live))
             return {"action": "escalate", "to": [target] if target != msg["from"] else [], "note": text}, ev
         return {"action": "forward", "to": [wp["choice"]], "note": text}, ev

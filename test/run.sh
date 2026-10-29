@@ -536,6 +536,42 @@ check "review refuses a team with no reviewer" sh -c "! (cd '$PROJECT' && '$ROOT
 unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_TIMEOUT STUDIO_REVIEW_POLL
 printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 
+echo "Reviewer: auto routing, model picks and broadcasts never reach it"
+cat > "$T/judge_test.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("router", sys.argv[1])
+r = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(r)
+os.environ["TYPESAFE_API_KEY"] = "test-key"
+peers = {"omac-architect": {"role": "architect: plans"}, "omac-worker-1": {"role": "worker 1"},
+         "omac-reviewer": {"role": "reviewer: reads done commits; takes no other messages"}}
+
+def answer(choice, action, p_action):
+    return ({"which_peer": {"choice": choice, "probabilities": {choice: 0.99}, "confidence": 0.99},
+             "action": {"choice": action, "probabilities": {action: p_action}},
+             "token_leak": {"noul": 0.0}}, 1)
+
+def run(msg, ans):
+    r.ask_model = lambda url, key, m, p: ans
+    return r.judge(msg, peers, router="jev")[0]
+
+auto = {"id": "a", "t": 0, "from": "omac-main", "to": "auto", "text": "schema changed"}
+d = run(auto, answer("omac-reviewer", "broadcast", 0.99))
+assert "omac-reviewer" not in d["to"], "broadcast reached the reviewer: %r" % d
+assert set(d["to"]) == {"omac-architect", "omac-worker-1"}, d
+d = run(auto, answer("omac-reviewer", "forward", 0.99))
+assert d["to"] == ["omac-architect"] and d["action"] == "escalate", "pick of the reviewer was not escalated: %r" % d
+d = run(auto, answer("omac-worker-1", "broadcast", 0.99))
+assert "omac-reviewer" not in d["to"], "broadcast from a model pick reached the reviewer: %r" % d
+named = {"id": "n", "t": 0, "from": "omac-worker-1", "to": "omac-reviewer", "text": "done abc1234"}
+d = run(named, answer("omac-architect", "broadcast", 0.99))
+assert "omac-reviewer" not in d["to"], "a broadcast named to the reviewer reached it: %r" % d
+d = run(named, answer("omac-architect", "forward", 0.99))
+assert d["to"] == ["omac-reviewer"], "explicit address to the reviewer did not go through: %r" % d
+print("ok")
+PY
+check "broadcast and model picks skip the reviewer" python3 "$T/judge_test.py" "$ROOT/router/router.py"
+
 echo "Mixed-team guide: every flag it names exists, and the README links it"
 usage_text=$("$ROOT/bin/studio" help 2>&1)
 guide_flags=$(grep -o -- '--[a-z][a-z-]*' "$ROOT/docs/MIXED-TEAMS.md" | sort -u)
