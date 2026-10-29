@@ -329,43 +329,55 @@ def deliver(herdr, peer, sender, text, verified=True):
 # --- review requests ---------------------------------------------------------
 
 DONE_RE = re.compile(r"\s*done\s+([0-9a-fA-F]{7,40})\b")
+ASK_RE = re.compile(r"\s*review\s+([0-9a-fA-F]{7,40})\s*$")   # `studio review <commit>` in a pane
 REVIEW_BIN = ""     # path to bin/studio, set by `studio router`; empty turns the review hook off
-REVIEWS = []        # running `studio review` processes, reaped each pass
-REVIEWED = set()    # commits already sent to the reviewer by this router
+REVIEWS = {}        # commit -> the `studio review` process running it; a finished one is forgotten
 
 
 def review_request(msg, peers):
-    """The commit a verified worker's "done <commit>" note asks to have reviewed, and the
-    reviewer's name. (None, None) when the message is anything else or the team has no reviewer."""
-    m = DONE_RE.match(msg.get("text", ""))
-    if not m or not re.search(r"-worker-\d+$", msg["from"]):
-        return None, None
+    """What a verified message asks for, as (commit, reviewer, manual).
+    A worker's "done <commit>" is a review request too (manual False). A "review <commit>"
+    from the architect, the main session or a worker is a manual request (manual True), which is
+    not routed anywhere. Anything else, or a team with no reviewer: (None, None, False)."""
     reviewer = next((n for n, p in peers.items() if p.get("role", "").startswith("reviewer")), None)
-    return (m.group(1).lower(), reviewer) if reviewer else (None, None)
+    if not reviewer:
+        return None, None, False
+    m = DONE_RE.match(msg.get("text", ""))
+    if m and re.search(r"-worker-\d+$", msg["from"]):
+        return m.group(1).lower(), reviewer, False
+    m = ASK_RE.match(msg.get("text", ""))
+    role = peers.get(msg["from"], {}).get("role", "")
+    if m and role.startswith(("architect", "main", "worker")):
+        return m.group(1).lower(), reviewer, True
+    return None, None, False
 
 
 def start_review(s, reviewer, commit, tokens):
-    """Start `studio review <commit>` in the background, signed as the reviewer, so the relay
-    arrives from it. Returns a short note for the log. Never waits for the review."""
+    """Start `studio review <commit>` in the background. The child gets the reviewer's own token
+    (from the router's map, never from a pane), so its relay is verified as from the reviewer.
+    A commit is skipped only while its review is still running; once that review has ended
+    (a verdict, a timeout or a failed prompt), asking again starts a new one.
+    Returns a short note for the log. Never waits for the review."""
     if not REVIEW_BIN:
         return "no review command configured"
-    if commit in REVIEWED:
-        return "already requested"
+    running = REVIEWS.get(commit)
+    if running is not None and running.poll() is None:
+        return "already running"
     project = os.path.dirname(s.dir)
-    env = dict(os.environ, STUDIO_SEAL=tokens.get(reviewer, ""), PWD=project)
+    env = dict(os.environ, STUDIO_SEAL=tokens.get(reviewer, ""), PWD=project, STUDIO_REVIEW_FROM_ROUTER="1")
     try:
         with open(os.path.join(s.dir, "review.log"), "a") as log:
             proc = subprocess.Popen([REVIEW_BIN, "review", commit], cwd=project, env=env, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as e:
         return "could not start: %s" % str(e)[:80]
-    REVIEWS.append(proc)
-    REVIEWED.add(commit)
+    REVIEWS[commit] = proc
     return "started"
 
 
 def reap_reviews():
-    REVIEWS[:] = [p for p in REVIEWS if p.poll() is None]
+    for commit in [c for c, p in REVIEWS.items() if p.poll() is not None]:
+        del REVIEWS[commit]
 
 
 def process(s, herdr, path, peers, tokens):
@@ -374,14 +386,18 @@ def process(s, herdr, path, peers, tokens):
     if not valid_message(msg):
         raise ValueError("not a studio message")
     verified, why = verify_sender(msg, tokens, s)
-    decision, ev = judge(msg, peers)
+    commit, reviewer, manual = review_request(msg, peers) if verified else (None, None, False)
+    if manual:
+        # A manual request is for the router only: it starts the review and goes nowhere else.
+        decision, ev = {"action": "drop", "to": [], "note": msg["text"]}, {"router": ROUTER, "request": "review"}
+    else:
+        decision, ev = judge(msg, peers)
     row = {"kind": "route", "id": msg["id"], "from": msg["from"], "addressed": msg["to"], "decision": decision["action"],
            "to": decision["to"], "text": msg["text"][:120], "verified": verified}
     if not verified:
         row["unverified"] = why
     row.update(ev)
     s.write_log(row)
-    commit, reviewer = review_request(msg, peers) if verified else (None, None)
     if commit:
         s.write_log({"kind": "review", "id": msg["id"], "from": msg["from"], "commit": commit,
                      "reviewer": reviewer, "note": start_review(s, reviewer, commit, tokens)})

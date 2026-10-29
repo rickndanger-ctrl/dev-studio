@@ -367,6 +367,7 @@ model_for() { # kind role -> model
 team_uses() {
   local k
   for k in $KIND_ARCH $KIND_MAIN $KIND_WORKER $WORKER_KINDS; do [ "$k" = "$1" ] && return 0; done
+  [ "${REVIEWER:-none}" = "$1" ] && return 0   # a claude reviewer still needs the trust step
   return 1
 }
 
@@ -514,8 +515,10 @@ layout() {
     n=$((n + 1))
   done
   if [ "${REVIEWER:-none}" != none ]; then
+    # The reviewer gets a token the router holds, but no seal in its pane: only the router's
+    # review child is given it, so the reviewer cannot sign a studio send.
     issue_token "$PROJECT_SLUG-reviewer"
-    next=$(split "$pane" down 0.5 "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
+    next=$(split "$pane" down 0.5 "$PROJECT_DIR")
     start_agent "$next" "reviewer · $(model_for "$REVIEWER" reviewer) · $REVIEWER" reviewer "$PROJECT_SLUG-reviewer" "$(model_for "$REVIEWER" reviewer)" "$REVIEWER"
   fi
   # The router pane is split last so its environment can carry every token.
@@ -953,6 +956,14 @@ cmd_review() {
   set_project "$dir"; load_team
   [ "$REVIEWER" != none ] || die "This team has no reviewer. Start one with: studio up --reviewer codex"
   reviewer=$PROJECT_SLUG-reviewer; architect=$PROJECT_SLUG-architect
+  if [ "${STUDIO_REVIEW_FROM_ROUTER:-0}" != 1 ]; then
+    # Typed by hand: the reviewer never sees this pane's seal. Ask the router instead, signed with
+    # this pane's own seal (the sender is STUDIO_AGENT, default the architect), and let it start
+    # the review with the reviewer's token. The router answers only verified team members.
+    cmd_send "${STUDIO_AGENT:-$architect}" auto "review $commit" >/dev/null
+    ok "Asked the router to review $commit. The verdict comes from $reviewer."
+    return 0
+  fi
   rev=$(git -C "$PROJECT_DIR" rev-parse --verify -q "$commit^{commit}" 2>/dev/null) || rev=''
   if [ -z "$rev" ]; then
     cmd_send "$reviewer" "@$architect" "REVIEW $commit: BLOCK commit $commit is not in $PROJECT_SLUG" >/dev/null

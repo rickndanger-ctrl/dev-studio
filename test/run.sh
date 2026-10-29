@@ -498,6 +498,7 @@ echo "Reviewer: a worker's done note starts one review; the verdict reaches the 
 printf 'SOUNDS=0\nREVIEWER=codex\n' > "$STUDIO_CONF"
 STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up OMAC --no-attach --router rules
 RV_TOKENS=$(grep -o -- '--env STUDIO_TOKENS={[^ ]*' "$MOCK_LOG" | sed 's/--env STUDIO_TOKENS=//')
+SEAL_PANES=$(grep -c -- '--env STUDIO_SEAL=' "$MOCK_LOG")
 W1TOKEN=$(jq -r '.["omac-worker-1"]' <<<"$RV_TOKENS")
 printf 'review me\n' > "$PROJECT/review-me.txt"
 git -C "$PROJECT" add review-me.txt
@@ -522,8 +523,26 @@ check "architect gets it from the reviewer"  has "agent prompt omac-architect [s
 (cd "$PROJECT" && "$ROOT/bin/studio" send omac-worker-2 @omac-architect "done 1234567")
 STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
 check "unsigned done note starts no review"  test "$(grep -c '"kind": "review"' "$PROJECT/.studio/router.log")" = 1
-
+# Only the router's review child may hold the reviewer's seal: the reviewer's pane gets none.
+check "reviewer pane gets no seal (4 panes do)" test "$SEAL_PANES" = 4
+check "the router still holds the reviewer token" jq -e 'has("omac-reviewer")' <<<"$RV_TOKENS"
+# A review asked for by hand goes through the router, signed by the architect's own seal.
+ARCHTOKEN=$(jq -r '.["omac-architect"]' <<<"$RV_TOKENS")
+relays_then() { grep -ls -- "REVIEW $COMMIT: $1" "$PROJECT"/.studio/mail/outbox/*.json 2>/dev/null | wc -l | tr -d ' '; }
+manual_before=$(relays_then CHANGES)
+(cd "$PROJECT" && STUDIO_TOKEN=$ARCHTOKEN "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+: > "$MOCK_LOG"
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "a hand review is handled by the router, not routed" grep -q '"request": "review"' "$PROJECT/.studio/router.log"
+i=0; while [ $i -lt 30 ] && [ "$(relays_then CHANGES)" -le "$manual_before" ]; do sleep 1; i=$((i + 1)); done
+check "a hand review gets a verdict from the reviewer" test "$(relays_then CHANGES)" -gt "$manual_before"
+: > "$MOCK_LOG"
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "the hand review's relay is verified as from the reviewer" has "agent prompt omac-architect [studio relay · from @omac-reviewer] REVIEW $COMMIT: CHANGES"
+check "and it is not marked UNVERIFIED"      sh -c "! grep -q 'from @omac-reviewer, UNVERIFIED' '$MOCK_LOG'"
 echo "Reviewer: studio review checks its input and always relays a verdict"
+# These run the review the way the router's child does; a typed review only asks the router.
+export STUDIO_REVIEW_FROM_ROUTER=1
 check "review refuses a non-hash"            sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review not-a-hash >/dev/null 2>&1)"
 (cd "$PROJECT" && "$ROOT/bin/studio" review 0000000 >/dev/null 2>&1) || true
 check "a missing commit is relayed as BLOCK" grep -qs "REVIEW 0000000: BLOCK" "$PROJECT"/.studio/mail/outbox/*.json
@@ -572,7 +591,7 @@ wait "$P1" || true; wait "$P2" || true
 check "two reviews at once both get a verdict" test "$(relays_of CHANGES)" -ge "$((c_before + 2))"
 check "neither waits out the other"            test "$(relays_of TIMEOUT)" = "$t_before"
 check "the lock is released after both"        test ! -d "$LOCK"
-unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_POLL
+unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_POLL STUDIO_REVIEW_FROM_ROUTER
 
 jq '.reviewer = "none"' "$PROJECT/.studio/team.json" > "$T/team-none.json" && cp "$T/team-none.json" "$PROJECT/.studio/team.json"
 check "review refuses a team with no reviewer" sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review '$COMMIT' >/dev/null 2>&1)"
@@ -614,6 +633,46 @@ assert d["to"] == ["omac-reviewer"], "explicit address to the reviewer did not g
 print("ok")
 PY
 check "broadcast and model picks skip the reviewer" python3 "$T/judge_test.py" "$ROOT/router/router.py"
+
+echo "Router: a commit is skipped only while its review runs"
+cat > "$T/review_test.py" <<'PY'
+import importlib.util, os, sys, tempfile, time
+spec = importlib.util.spec_from_file_location("router", sys.argv[1])
+r = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(r)
+d = tempfile.mkdtemp()
+os.makedirs(os.path.join(d, ".studio"))
+class S: pass
+s = S(); s.dir = os.path.join(d, ".studio")
+fake = os.path.join(d, "fake-review.sh")
+with open(fake, "w") as f:
+    f.write("#!/bin/sh\nsleep 1\n")
+os.chmod(fake, 0o755)
+r.REVIEW_BIN = fake
+tokens = {"omac-reviewer": "t"}
+a = r.start_review(s, "omac-reviewer", "abc1234", tokens)
+b = r.start_review(s, "omac-reviewer", "abc1234", tokens)
+assert a == "started" and b == "already running", (a, b)
+time.sleep(2); r.reap_reviews()
+c = r.start_review(s, "omac-reviewer", "abc1234", tokens)
+assert c == "started", "a second request after the review ended did not start: %r" % c
+time.sleep(2); r.reap_reviews()
+print("ok")
+PY
+check "a second request after a finished review starts again" python3 "$T/review_test.py" "$ROOT/router/router.py"
+
+echo "Trust: a codex team with a claude reviewer still gets the claude trust step"
+mkdir -p "$HOME/Developer/Trusty" && git -C "$HOME/Developer/Trusty" init -q
+git -C "$HOME/Developer/Trusty" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
+mkdir -p "$HOME/Developer/Plain" && git -C "$HOME/Developer/Plain" init -q
+git -C "$HOME/Developer/Plain" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m "first commit"
+: > "$MOCK_STATE"; : > "$MOCK_LOG"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up Trusty --no-attach --codex --reviewer claude
+check "codex team + claude reviewer runs the trust step" jq -e --arg p "$HOME/Developer/Trusty" '.projects[$p].hasTrustDialogAccepted == true' "$HOME/.claude.json"
+STUDIO_FAKE_MEM_MB=8000 "$ROOT/bin/studio" up Plain --no-attach --codex --reviewer none
+check "codex team with no claude role skips the trust step" sh -c "! jq -e --arg p '$HOME/Developer/Plain' '.projects[\$p].hasTrustDialogAccepted == true' '$HOME/.claude.json' >/dev/null"
+printf 'SOUNDS=0\n' > "$STUDIO_CONF"
 
 echo "Mixed-team guide: every flag it names exists, and the README links it"
 usage_text=$("$ROOT/bin/studio" help 2>&1)
