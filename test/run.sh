@@ -504,7 +504,7 @@ git -C "$PROJECT" add review-me.txt
 git -C "$PROJECT" -c user.name=test -c user.email=test@example.com commit -q -m "job: add review-me"
 COMMIT=$(git -C "$PROJECT" rev-parse --short=7 HEAD)
 RV_REPLY=$T/reply.txt; RV_PANE=$T/pane.txt
-printf '1. src is fine\nREVIEW %s: CHANGES\n' "$COMMIT" > "$RV_REPLY"
+printf 'request @NONCE@\n1. src is fine\nREVIEW %s: CHANGES\n' "$COMMIT" > "$RV_REPLY"
 rm -f "$RV_PANE"
 export MOCK_PANE=$RV_PANE MOCK_REPLY=$RV_REPLY STUDIO_REVIEW_TIMEOUT=20 STUDIO_REVIEW_POLL=1
 (cd "$PROJECT" && STUDIO_TOKEN=$W1TOKEN "$ROOT/bin/studio" send omac-worker-1 @omac-architect "done $COMMIT")
@@ -531,6 +531,49 @@ unset MOCK_REPLY
 export MOCK_PANE=$T/silent.txt; rm -f "$MOCK_PANE"
 (cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=2 STUDIO_REVIEW_POLL=1 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
 check "silence is relayed as TIMEOUT"        grep -qs "REVIEW $COMMIT: TIMEOUT" "$PROJECT"/.studio/mail/outbox/*.json
+echo "Reviewer: one review at a time, and a verdict counts only after its own request"
+export MOCK_REPLY=$RV_REPLY STUDIO_REVIEW_POLL=1
+LOCK=$PROJECT/.studio/review.lock
+relays_of() { grep -ls -- "REVIEW $COMMIT: $1" "$PROJECT"/.studio/mail/outbox/*.json 2>/dev/null | wc -l | tr -d ' '; }
+printf 'REVIEW %s: PASS\n' "$COMMIT" > "$T/old-screen.txt"
+export MOCK_PANE=$T/old-screen.txt
+c_before=$(relays_of CHANGES)
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=10 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+check "repeat review waits for the new verdict" test "$(relays_of CHANGES)" -gt "$c_before"
+check "the old PASS on screen is never relayed" sh -c "! grep -qs 'REVIEW $COMMIT: PASS' '$PROJECT'/.studio/mail/outbox/*.json"
+printf 'REVIEW %s: PASS\n' "$COMMIT" > "$T/old-only.txt"
+export MOCK_PANE=$T/old-only.txt
+unset MOCK_REPLY
+t_before=$(relays_of TIMEOUT)
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=2 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+check "an old verdict alone times out"       test "$(relays_of TIMEOUT)" -gt "$t_before"
+export MOCK_REPLY=$RV_REPLY
+sleep 60 & HOLDER=$!
+mkdir "$LOCK"; printf '%s\n' "$HOLDER" > "$LOCK/pid"
+export MOCK_PANE=$T/busy.txt; rm -f "$MOCK_PANE"
+prompts_before=$(grep -c 'agent prompt omac-reviewer' "$MOCK_LOG")
+t_before=$(relays_of TIMEOUT)
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=2 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+check "a review waits for a live lock, then times out" test "$(relays_of TIMEOUT)" -gt "$t_before"
+check "the waiting review never prompts the reviewer"  test "$(grep -c 'agent prompt omac-reviewer' "$MOCK_LOG")" = "$prompts_before"
+kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+rm -rf "$LOCK"
+mkdir "$LOCK"; printf '999999\n' > "$LOCK/pid"
+export MOCK_PANE=$T/stale.txt; rm -f "$MOCK_PANE"
+c_before=$(relays_of CHANGES)
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=10 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
+check "a stale lock (dead pid) is taken over" test "$(relays_of CHANGES)" -gt "$c_before"
+check "the lock is released after a review"   test ! -d "$LOCK"
+export MOCK_PANE=$T/parallel.txt; rm -f "$MOCK_PANE"
+c_before=$(relays_of CHANGES); t_before=$(relays_of TIMEOUT)
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=30 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) & P1=$!
+(cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=30 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) & P2=$!
+wait "$P1" || true; wait "$P2" || true
+check "two reviews at once both get a verdict" test "$(relays_of CHANGES)" -ge "$((c_before + 2))"
+check "neither waits out the other"            test "$(relays_of TIMEOUT)" = "$t_before"
+check "the lock is released after both"        test ! -d "$LOCK"
+unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_POLL
+
 jq '.reviewer = "none"' "$PROJECT/.studio/team.json" > "$T/team-none.json" && cp "$T/team-none.json" "$PROJECT/.studio/team.json"
 check "review refuses a team with no reviewer" sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review '$COMMIT' >/dev/null 2>&1)"
 unset MOCK_PANE MOCK_REPLY STUDIO_REVIEW_TIMEOUT STUDIO_REVIEW_POLL

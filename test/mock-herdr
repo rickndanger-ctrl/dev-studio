@@ -43,7 +43,13 @@ case "$1 ${2:-}" in
     [ -n "${MOCK_PANE:-}" ] && [ -f "$MOCK_PANE" ] && cat "$MOCK_PANE"
     exit 0 ;;
   "agent prompt")
-    case $3 in *reviewer*) [ -n "${MOCK_PANE:-}" ] && [ -n "${MOCK_REPLY:-}" ] && [ -f "$MOCK_REPLY" ] && cp "$MOCK_REPLY" "$MOCK_PANE" ;; esac
+    # The reply is appended under what is already on screen, and @NONCE@ becomes this request's nonce.
+    case $3 in *reviewer*)
+      if [ -n "${MOCK_PANE:-}" ] && [ -n "${MOCK_REPLY:-}" ] && [ -f "$MOCK_REPLY" ]; then
+        nonce=$(printf '%s' "${4:-}" | sed -n 's/.*request \(r[0-9a-f]*\).*/\1/p')
+        sed "s/@NONCE@/$nonce/g" "$MOCK_REPLY" >> "$MOCK_PANE"
+      fi ;;
+    esac
     case $3 in
       *blocked*) echo '{"error":{"code":"agent_blocked","message":"agent is blocked"}}' >&2; exit 1 ;;
       *) jq -n --arg n "$3" '{result: {type: "ok", agent: $n}}' ;;

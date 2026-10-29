@@ -912,14 +912,39 @@ cmd_ask() {
 }
 
 # The reviewer's recent pane text, unwrapped, one line per row. Empty if Herdr can't read it.
-review_pane() { hd agent read "$1" --source recent-unwrapped --format text --lines 400 2>/dev/null || true; }
+review_pane() { hd agent read "$1" --source recent-unwrapped --format text --lines 1000 2>/dev/null || true; }
+
+# Reviews run one at a time per team. The lock is a directory under .studio whose pid file holds
+# the pid of the review that owns it; a lock whose pid is gone is stale and is taken over.
+review_lock() { # lock-dir seconds-to-wait -> 0 once held, 1 when the wait runs out
+  local dir=$1 wait_s=$2 holder deadline
+  deadline=$(( $(date +%s) + wait_s ))
+  while :; do
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$dir/pid"
+      return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    holder=$(cat "$dir/pid" 2>/dev/null || true)
+    if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+      mv "$dir" "$dir.stale.$$" 2>/dev/null && rm -rf "$dir.stale.$$"
+      continue
+    fi
+    sleep 1
+  done
+}
+
+review_unlock() { # lock-dir: release it, but only if this review holds it
+  [ "$(cat "$1/pid" 2>/dev/null || true)" = "$$" ] && rm -rf "$1"
+  return 0
+}
 
 # studio review <commit>: ask the team's reviewer for a verdict on one commit, then relay the
 # verdict to the architect as from the reviewer. The router starts this in the background when
 # a worker sends "done <commit>". It always relays something: the verdict, or
 # "REVIEW <commit>: TIMEOUT" once STUDIO_REVIEW_TIMEOUT seconds pass. It never blocks anyone.
 cmd_review() {
-  local commit=${1:-} dir reviewer architect rev stat brief prompt out before now block verdict body timeout poll deadline
+  local commit=${1:-} dir reviewer architect rev stat brief prompt out block verdict body timeout poll deadline lock nonce
   [ -n "$commit" ] || die "Usage: studio review <commit>"
   case $commit in *[!0-9a-fA-F]*) die "A commit is a hash of 7 to 40 hex characters: $commit" ;; esac
   [ ${#commit} -ge 7 ] && [ ${#commit} -le 40 ] || die "A commit is a hash of 7 to 40 hex characters: $commit"
@@ -933,39 +958,53 @@ cmd_review() {
     cmd_send "$reviewer" "@$architect" "REVIEW $commit: BLOCK commit $commit is not in $PROJECT_SLUG" >/dev/null
     die "No commit $commit in $PROJECT_DIR. Told the architect."
   fi
-  # The job brief is the commit message; the stat summary says which files moved.
+  timeout=${STUDIO_REVIEW_TIMEOUT:-900}; poll=${STUDIO_REVIEW_POLL:-15}
+  # One review at a time per team. The wait for the lock is bounded like the review itself.
+  lock=$STUDIO_DIR/review.lock
+  if ! review_lock "$lock" "$timeout"; then
+    cmd_send "$reviewer" "@$architect" "REVIEW $commit: TIMEOUT - another review was still running" >/dev/null
+    ok "Told the architect: REVIEW $commit: TIMEOUT"
+    return 0
+  fi
+  trap "review_unlock '$lock'" EXIT
+  # The job brief is the commit message; the stat summary says which files moved. The nonce
+  # ties this request to its own verdict, so an old verdict still on screen is never taken.
   stat=$(git -C "$PROJECT_DIR" show --stat --format= "$rev" 2>/dev/null | tail -n 25 | tr '\n' ';')
   brief=$(git -C "$PROJECT_DIR" log -1 --format=%B "$rev" 2>/dev/null | tr '\n' ' ' | cut -c 1-1200)
-  prompt="Review commit $commit of $PROJECT_SLUG. Job brief (the commit message): $brief Changed files: $stat Read the whole change with git show $rev. Answer with short numbered findings (bugs, risky changes, scope drift, missing tests, private data), then end with exactly one line: REVIEW $commit: PASS, CHANGES or BLOCK."
+  nonce=r$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  prompt="Review commit $commit of $PROJECT_SLUG (request $nonce). Job brief (the commit message): $brief Changed files: $stat Read the whole change with git show $rev. Answer with short numbered findings (bugs, risky changes, scope drift, missing tests, private data), then end with exactly one line: REVIEW $commit: PASS, CHANGES or BLOCK."
   prompt=$(printf '%s' "$prompt" | tr '\n\r\t' '   ')
-  # Count the verdict lines already on screen, so an old verdict for this commit is not taken as the new one.
-  out=$(review_pane "$reviewer")
-  before=$(printf '%s\n' "$out" | grep -cE "REVIEW $commit: (PASS|CHANGES|BLOCK)[[:space:]]*\$" || true)
   if ! hd agent prompt "$reviewer" "$prompt" >/dev/null 2>&1; then
+    review_unlock "$lock"
     cmd_send "$reviewer" "@$architect" "REVIEW $commit: TIMEOUT - the reviewer did not take the review request" >/dev/null
     die "The reviewer $reviewer did not take the request for $commit. Told the architect."
   fi
-  timeout=${STUDIO_REVIEW_TIMEOUT:-900}; poll=${STUDIO_REVIEW_POLL:-15}
+  # The clock starts once the lock is held.
   deadline=$(( $(date +%s) + timeout ))
   say "Reviewing $commit with $reviewer (up to ${timeout}s)"
   while :; do
     out=$(review_pane "$reviewer")
-    now=$(printf '%s\n' "$out" | grep -cE "REVIEW $commit: (PASS|CHANGES|BLOCK)[[:space:]]*\$" || true)
-    if [ "$now" -gt "$before" ]; then
-      # The verdict is the reviewer's last line; keep the up to 13 lines before it as findings.
-      block=$(printf '%s\n' "$out" | awk -v id="$commit" '
-        { line[NR] = $0 }
-        index($0, "REVIEW " id ": ") && $0 ~ /(PASS|CHANGES|BLOCK)[[:space:]]*$/ { last = NR }
-        END { for (i = (last > 14 ? last - 13 : 1); last && i <= last; i++) if (line[i] ~ /[^[:space:]]/) print line[i] }')
-      break
-    fi
+    # Accept only a verdict line that comes after this request's nonce line.
+    block=$(printf '%s\n' "$out" | awk -v id="$commit" -v nonce="$nonce" '
+      { line[NR] = $0 }
+      index($0, nonce) { start = NR }
+      start && NR > start && index($0, "REVIEW " id ": ") && $0 ~ /(PASS|CHANGES|BLOCK)[[:space:]]*$/ { last = NR }
+      END {
+        if (!last) exit
+        from = last - 13; if (from <= start) from = start + 1
+        for (i = from; i <= last; i++) if (line[i] ~ /[^[:space:]]/) print line[i]
+      }')
+    [ -n "$block" ] && break
     if [ "$(date +%s)" -ge "$deadline" ]; then
+      review_unlock "$lock"
       cmd_send "$reviewer" "@$architect" "REVIEW $commit: TIMEOUT" >/dev/null
       ok "Told the architect: REVIEW $commit: TIMEOUT"
       return 0
     fi
     sleep "$poll"
   done
+  review_unlock "$lock"
+  # The findings sit above the verdict; the verdict is the last line of the block.
   verdict=$(printf '%s\n' "$block" | tail -n 1 | sed 's/[[:space:]]*$//')
   body=$(printf '%s\n' "$block" | sed '$d' | tr '\n' ' ' | tr -s ' ' | cut -c 1-600)
   if [ -n "$body" ]; then cmd_send "$reviewer" "@$architect" "$verdict - $body" >/dev/null
