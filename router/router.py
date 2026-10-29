@@ -319,6 +319,48 @@ def deliver(herdr, peer, sender, text, verified=True):
     return ("held" if code in ("agent_blocked", "agent_not_found") else "failed"), code
 
 
+# --- review requests ---------------------------------------------------------
+
+DONE_RE = re.compile(r"\s*done\s+([0-9a-fA-F]{7,40})\b")
+REVIEW_BIN = ""     # path to bin/studio, set by `studio router`; empty turns the review hook off
+REVIEWS = []        # running `studio review` processes, reaped each pass
+REVIEWED = set()    # commits already sent to the reviewer by this router
+
+
+def review_request(msg, peers):
+    """The commit a verified worker's "done <commit>" note asks to have reviewed, and the
+    reviewer's name. (None, None) when the message is anything else or the team has no reviewer."""
+    m = DONE_RE.match(msg.get("text", ""))
+    if not m or not re.search(r"-worker-\d+$", msg["from"]):
+        return None, None
+    reviewer = next((n for n, p in peers.items() if p.get("role", "").startswith("reviewer")), None)
+    return (m.group(1).lower(), reviewer) if reviewer else (None, None)
+
+
+def start_review(s, reviewer, commit, tokens):
+    """Start `studio review <commit>` in the background, signed as the reviewer, so the relay
+    arrives from it. Returns a short note for the log. Never waits for the review."""
+    if not REVIEW_BIN:
+        return "no review command configured"
+    if commit in REVIEWED:
+        return "already requested"
+    project = os.path.dirname(s.dir)
+    env = dict(os.environ, STUDIO_SEAL=tokens.get(reviewer, ""), PWD=project)
+    try:
+        with open(os.path.join(s.dir, "review.log"), "a") as log:
+            proc = subprocess.Popen([REVIEW_BIN, "review", commit], cwd=project, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        return "could not start: %s" % str(e)[:80]
+    REVIEWS.append(proc)
+    REVIEWED.add(commit)
+    return "started"
+
+
+def reap_reviews():
+    REVIEWS[:] = [p for p in REVIEWS if p.poll() is None]
+
+
 def process(s, herdr, path, peers, tokens):
     with open(path) as f:
         msg = json.load(f)
@@ -332,6 +374,10 @@ def process(s, herdr, path, peers, tokens):
         row["unverified"] = why
     row.update(ev)
     s.write_log(row)
+    commit, reviewer = review_request(msg, peers) if verified else (None, None)
+    if commit:
+        s.write_log({"kind": "review", "id": msg["id"], "from": msg["from"], "commit": commit,
+                     "reviewer": reviewer, "note": start_review(s, reviewer, commit, tokens)})
     outcome = "delivered"
     for peer in decision["to"]:
         if peer == msg["from"]:
@@ -356,6 +402,8 @@ def process(s, herdr, path, peers, tokens):
 
 
 def cmd_daemon(a):
+    global REVIEW_BIN
+    REVIEW_BIN = a.review_bin
     s = Studio(a.studio)
     s.write_log({"kind": "start", "router": ROUTER, "pid": os.getpid()})
     print("studio router · %s · watching %s" % (ROUTER, s.outbox), flush=True)
@@ -370,6 +418,7 @@ def cmd_daemon(a):
         statuses = {n: t["status"] for n, t in table.items()}
         for n in peers:
             peers[n]["status"] = statuses.get(n, "offline")
+        reap_reviews()
         for name in sorted(os.listdir(s.outbox)):
             if name.startswith(".") or not name.endswith(".json"):
                 continue
@@ -414,6 +463,7 @@ def main():
     d.add_argument("--studio", required=True)
     d.add_argument("--herdr", default="herdr")
     d.add_argument("--interval", default="0.5")
+    d.add_argument("--review-bin", default="", help="bin/studio: started as `studio review <commit>` on a worker's done note")
     d.add_argument("--once", action="store_true", help="process the outbox once and exit (tests)")
     a = p.parse_args()
     {"send": cmd_send, "ask": cmd_ask, "daemon": cmd_daemon}[a.cmd](a)

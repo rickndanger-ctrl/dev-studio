@@ -37,7 +37,13 @@ case "$1 ${2:-}" in
     echo '{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"agent":"claude","agent_status":"working","name":"omac-architect","pane_id":"w1:p2","workspace_id":"w1"},{"agent":"claude","agent_status":"blocked","name":"omac-main","pane_id":"w1:p4","workspace_id":"w1"},{"agent":"claude","agent_status":"idle","name":"omac-worker-1","pane_id":"w1:p5","workspace_id":"w1"},{"agent":"claude","agent_status":"done","pane_id":"w1:p6","workspace_id":"w1"}]}}' ;;
   "agent rename")
     jq -n --arg p "$3" --arg n "$4" '{result: {type: "agent_info", agent: {agent: "claude", agent_status: "idle", name: $n, pane_id: $p}}}' ;;
+  "agent read")
+    # Reviewer pane text: MOCK_PANE is what the pane shows. A prompt sent while MOCK_REPLY
+    # is set makes the pane show that reply, as a reviewer's answer would.
+    [ -n "${MOCK_PANE:-}" ] && [ -f "$MOCK_PANE" ] && cat "$MOCK_PANE"
+    exit 0 ;;
   "agent prompt")
+    case $3 in *reviewer*) [ -n "${MOCK_PANE:-}" ] && [ -n "${MOCK_REPLY:-}" ] && [ -f "$MOCK_REPLY" ] && cp "$MOCK_REPLY" "$MOCK_PANE" ;; esac
     case $3 in
       *blocked*) echo '{"error":{"code":"agent_blocked","message":"agent is blocked"}}' >&2; exit 1 ;;
       *) jq -n --arg n "$3" '{result: {type: "ok", agent: $n}}' ;;

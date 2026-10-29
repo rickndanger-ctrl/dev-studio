@@ -79,6 +79,7 @@ load_config() {
   CODEX_MAIN_MODEL=gpt-6.1-sol
   CODEX_WORKER_MODEL=gpt-6.1-sol
   CODEX_SANDBOX=''            # codex --sandbox for codex roles: read-only | workspace-write | danger-full-access; blank = codex's default
+  REVIEWER=none               # codex | claude | none: the read-only reviewer every team gets (`studio up --reviewer` overrides)
   WEB_PORT=8790               # the board as a web page (studio web): loopback and Tailscale only
   STUDIO_NAME=$(scutil --get ComputerName 2>/dev/null || hostname -s)   # shown in the web page header
   PEER_URL=''                 # the other Mac's board, e.g. http://100.64.0.2:8787 (header link)

@@ -30,6 +30,10 @@ ${C_PINK}${C_BOLD}Dev Studio${C_RESET}  your AI dev team, one click away
   studio up ... [--architect-kind claude|codex] [--main-kind claude|codex]
                 [--worker-kind claude|codex | --workers-mixed]
                           each role's CLI; --workers-mixed gives codex, claude, codex… workers
+  studio up ... [--reviewer codex|claude|none]
+                          a read-only reviewer that checks each worker's "done <commit>"
+                          (default from REVIEWER in studio.conf, which starts none)
+  studio review <commit>  ask the reviewer for a verdict on a commit (the router does this itself)
   studio status [project] who is on the team and which CLI each one runs
   studio board            the live board (what the first tab shows)
   studio send FROM TO "note"   send a peer message through the router (TO = @name or auto)
@@ -252,11 +256,26 @@ codex_writable_grants() { # real-project studio-dir name
   printf '%s' "$out"
 }
 
+# The reviewer's command: it reads the project and writes nothing. Codex runs in the project
+# folder with a read-only sandbox, and gets no outbox and no worktree; claude gets plan mode.
+# It never sends messages: the router relays its verdict. kind model name brief -> command
+reviewer_cmd() {
+  if [ "$1" = codex ]; then
+    printf 'cd %s && codex -m %s --sandbox read-only %s' "$(printf %q "$PROJECT_DIR")" "$2" \
+      "$(printf %q "You are $3. Read $4 now and follow it as your role for this whole session. Then say which role you have and wait.")"
+  else
+    printf 'claude --name %s --model %s --permission-mode plan --settings %s --append-system-prompt-file %s' \
+      "$3" "$2" "$(printf %q "$STUDIO_HOME/settings/peer.json")" "$(printf %q "$4")"
+  fi
+}
+
 # start_agent pane label role name model kind [worktree]
 start_agent() {
   local pane=$1 label=$2 role=$3 name=$4 model=$5 kind=$6 worktree=${7:-} brief cmd dir sandbox='' adds='' real_project='' outbox='' common='' wd=''
   brief=$(role_file "$role" "$name")
-  if [ "$kind" = codex ]; then
+  if [ "$role" = reviewer ]; then
+    cmd=$(reviewer_cmd "$kind" "$model" "$name" "$brief")
+  elif [ "$kind" = codex ]; then
     # Codex has no system-prompt flag: the role brief is its first prompt. A codex worker
     # gets the same git worktree claude --worktree makes, and codex starts inside it.
     dir=$PROJECT_DIR
@@ -393,10 +412,14 @@ write_peers() {
     json="$json,\"$PROJECT_SLUG-worker-$n\":{\"role\":\"worker $n: small delegated tasks in its own worktree\",\"model\":\"$(model_for "$k" worker)\",\"kind\":\"$k\"}"
     n=$((n + 1))
   done
+  if [ "${REVIEWER:-none}" != none ]; then
+    # The role says it takes no messages, so the router sends it only the review requests.
+    json="$json,\"$PROJECT_SLUG-reviewer\":{\"role\":\"reviewer: reads each worker's done commit and reports REVIEW PASS, CHANGES or BLOCK; takes no other messages\",\"model\":\"$(model_for "$REVIEWER" reviewer)\",\"kind\":\"$REVIEWER\"}"
+  fi
   printf '%s}\n' "$json" | jq . > "$STUDIO_DIR/peers.json"
   jq -n --arg k "$AGENT_KIND" --arg r "$ROUTER" --arg a "$ARCH_M" --arg m "$MAIN_M" --arg w "$WORKER_M" --argjson n "$WORKERS" \
-    --arg ka "$KIND_ARCH" --arg km "$KIND_MAIN" --argjson kinds "$(team_kinds_json)" \
-    '{kind: $k, router: $r, arch_model: $a, main_model: $m, worker_model: $w, workers: $n,
+    --arg ka "$KIND_ARCH" --arg km "$KIND_MAIN" --argjson kinds "$(team_kinds_json)" --arg rv "$REVIEWER" \
+    '{kind: $k, router: $r, arch_model: $a, main_model: $m, worker_model: $w, workers: $n, reviewer: $rv,
       kinds: ({architect: $ka, main: $km} + $kinds)}' > "$STUDIO_DIR/team.json"
 }
 
@@ -414,10 +437,12 @@ load_team() {
   if [ ! -f "$f" ]; then
     pick_models "$AGENT_KIND" "$AGENT_KIND" "$AGENT_KIND"
     WORKER_KINDS=''
+    REVIEWER=none
     set_label
     return 0
   fi
   AGENT_KIND=$(jq -r .kind "$f")
+  REVIEWER=$(jq -r '.reviewer // "none"' "$f")   # teams from before reviewers have none
   ROUTER=$(jq -r .router "$f")
   ARCH_M=$(jq -r .arch_model "$f")
   MAIN_M=$(jq -r .main_model "$f")
@@ -441,6 +466,7 @@ load_team() {
 # Cap workers so the whole team fits in the memory that's free right now.
 fit_workers() {
   local avail per=${MB_PER_AGENT:-600} others=2 max
+  [ "${REVIEWER:-none}" = none ] || others=3   # the reviewer is one more agent in memory
   avail=$(mem_available_mb)
   case $avail in ''|*[!0-9]*) return 0 ;; esac
   max=$(( (avail - ${MEM_RESERVE_MB:-1536}) / per - others ))
@@ -460,6 +486,7 @@ fit_workers() {
 #  ├──────────────┼──────────────┤
 #  │ router       │ worker-2 …   │
 #  └──────────────┴──────────────┘
+# With --reviewer, the reviewer sits under the last worker (or under main with no workers).
 layout() {
   local ws team col router pane next n=1 left TOKEN board wk wm
   issue_token "$PROJECT_SLUG-architect"
@@ -486,6 +513,11 @@ layout() {
     pane=$next
     n=$((n + 1))
   done
+  if [ "${REVIEWER:-none}" != none ]; then
+    issue_token "$PROJECT_SLUG-reviewer"
+    next=$(split "$pane" down 0.5 "$PROJECT_DIR" "STUDIO_SEAL=$TOKEN")
+    start_agent "$next" "reviewer · $(model_for "$REVIEWER" reviewer) · $REVIEWER" reviewer "$PROJECT_SLUG-reviewer" "$(model_for "$REVIEWER" reviewer)" "$REVIEWER"
+  fi
   # The router pane is split last so its environment can carry every token.
   router=$(split "$team" down 0.25 "$PROJECT_DIR" "STUDIO_TOKENS=$TOKENS_JSON")
   start_pane_cmd "$router" "router · $ROUTER" "$(printf %q "$STUDIO_HOME/bin/studio") router $(printf %q "$PROJECT_DIR")"
@@ -665,7 +697,7 @@ set_project() { # project-arg
 }
 
 cmd_up() {
-  local attach=1 arg='' expect='' pick=0 arg_arch='' arg_main='' arg_worker='' mixed=0 n=1 k
+  local attach=1 arg='' expect='' pick=0 arg_arch='' arg_main='' arg_worker='' arg_rev='' mixed=0 n=1 k
   for a in "$@"; do
     if [ -n "$expect" ]; then
       case $expect in
@@ -673,6 +705,7 @@ cmd_up() {
         architect-kind) arg_arch=$a ;;
         main-kind) arg_main=$a ;;
         worker-kind) arg_worker=$a ;;
+        reviewer) arg_rev=$a ;;
       esac
       expect=''; continue
     fi
@@ -690,10 +723,15 @@ cmd_up() {
       --worker-kind) expect=worker-kind ;;
       --worker-kind=*) arg_worker=${a#--worker-kind=} ;;
       --workers-mixed) mixed=1 ;;
+      --reviewer) expect=reviewer ;;
+      --reviewer=*) arg_rev=${a#--reviewer=} ;;
       *) arg=$a ;;
     esac
   done
   [ -z "$expect" ] || die "$expect needs a value."
+  # --reviewer overrides REVIEWER from studio.conf; either way the value must be a known one.
+  [ -z "$arg_rev" ] || REVIEWER=$arg_rev
+  case $REVIEWER in none|claude|codex) ;; *) die "Unknown reviewer '$REVIEWER' (studio.conf or --reviewer). Use codex, claude or none." ;; esac
   case $ROUTER in jev|clef|rules) ;; *) die "Unknown router '$ROUTER'. Use jev, clef or rules." ;; esac
   case $AGENT_KIND in claude|codex) ;; *) die "Unknown agent kind '$AGENT_KIND'. Use claude or codex." ;; esac
   for k in "$arg_arch" "$arg_main" "$arg_worker"; do
@@ -718,6 +756,7 @@ cmd_up() {
   for k in $(printf '%s\n' "$KIND_ARCH" "$KIND_MAIN" "$KIND_WORKER" $WORKER_KINDS | sort -u); do
     command -v "$k" >/dev/null 2>&1 || die "$k isn't installed."
   done
+  [ "$REVIEWER" = none ] || command -v "$REVIEWER" >/dev/null 2>&1 || die "$REVIEWER isn't installed."
   command -v "$HERDR" >/dev/null 2>&1 || die "Herdr isn't installed. Run: brew install herdr"
   command -v jq >/dev/null 2>&1 || die "jq isn't installed. Run: brew install jq"
 
@@ -834,7 +873,7 @@ cmd_router() {
   set_project "$dir"; load_team
   export ROUTER CLEF_URL
   while :; do
-    "$PYTHON" "$STUDIO_HOME/router/router.py" daemon --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" ${STUDIO_ROUTER_ONCE:+--once}
+    "$PYTHON" "$STUDIO_HOME/router/router.py" daemon --studio "$STUDIO_DIR" --herdr "$(herdr_cli_cmd)" --review-bin "$STUDIO_HOME/bin/studio" ${STUDIO_ROUTER_ONCE:+--once}
     rc=$?
     [ "${STUDIO_ROUTER_ONCE:-0}" = 1 ] && return "$rc"
     printf '%s router exited (rc=%s); restarting in 2s. Ctrl-C to stop.\n' "$(date '+%H:%M:%S')" "$rc"
@@ -870,6 +909,68 @@ cmd_ask() {
   set_project "$dir"; load_team
   export ROUTER CLEF_URL
   "$PYTHON" "$STUDIO_HOME/router/router.py" ask --studio "$STUDIO_DIR" --from "${STUDIO_AGENT:-$PROJECT_SLUG-main}" --to "${STUDIO_TO:-auto}" --text "$*"
+}
+
+# The reviewer's recent pane text, unwrapped, one line per row. Empty if Herdr can't read it.
+review_pane() { hd agent read "$1" --source recent-unwrapped --format text --lines 400 2>/dev/null || true; }
+
+# studio review <commit>: ask the team's reviewer for a verdict on one commit, then relay the
+# verdict to the architect as from the reviewer. The router starts this in the background when
+# a worker sends "done <commit>". It always relays something: the verdict, or
+# "REVIEW <commit>: TIMEOUT" once STUDIO_REVIEW_TIMEOUT seconds pass. It never blocks anyone.
+cmd_review() {
+  local commit=${1:-} dir reviewer architect rev stat brief prompt out before now block verdict body timeout poll deadline
+  [ -n "$commit" ] || die "Usage: studio review <commit>"
+  case $commit in *[!0-9a-fA-F]*) die "A commit is a hash of 7 to 40 hex characters: $commit" ;; esac
+  [ ${#commit} -ge 7 ] && [ ${#commit} -le 40 ] || die "A commit is a hash of 7 to 40 hex characters: $commit"
+  dir=$(find_project_from_cwd)
+  [ -n "$dir" ] || die "No studio project here (no .studio folder above $PWD)."
+  set_project "$dir"; load_team
+  [ "$REVIEWER" != none ] || die "This team has no reviewer. Start one with: studio up --reviewer codex"
+  reviewer=$PROJECT_SLUG-reviewer; architect=$PROJECT_SLUG-architect
+  rev=$(git -C "$PROJECT_DIR" rev-parse --verify -q "$commit^{commit}" 2>/dev/null) || rev=''
+  if [ -z "$rev" ]; then
+    cmd_send "$reviewer" "@$architect" "REVIEW $commit: BLOCK commit $commit is not in $PROJECT_SLUG" >/dev/null
+    die "No commit $commit in $PROJECT_DIR. Told the architect."
+  fi
+  # The job brief is the commit message; the stat summary says which files moved.
+  stat=$(git -C "$PROJECT_DIR" show --stat --format= "$rev" 2>/dev/null | tail -n 25 | tr '\n' ';')
+  brief=$(git -C "$PROJECT_DIR" log -1 --format=%B "$rev" 2>/dev/null | tr '\n' ' ' | cut -c 1-1200)
+  prompt="Review commit $commit of $PROJECT_SLUG. Job brief (the commit message): $brief Changed files: $stat Read the whole change with git show $rev. Answer with short numbered findings (bugs, risky changes, scope drift, missing tests, private data), then end with exactly one line: REVIEW $commit: PASS, CHANGES or BLOCK."
+  prompt=$(printf '%s' "$prompt" | tr '\n\r\t' '   ')
+  # Count the verdict lines already on screen, so an old verdict for this commit is not taken as the new one.
+  out=$(review_pane "$reviewer")
+  before=$(printf '%s\n' "$out" | grep -cE "REVIEW $commit: (PASS|CHANGES|BLOCK)[[:space:]]*\$" || true)
+  if ! hd agent prompt "$reviewer" "$prompt" >/dev/null 2>&1; then
+    cmd_send "$reviewer" "@$architect" "REVIEW $commit: TIMEOUT - the reviewer did not take the review request" >/dev/null
+    die "The reviewer $reviewer did not take the request for $commit. Told the architect."
+  fi
+  timeout=${STUDIO_REVIEW_TIMEOUT:-900}; poll=${STUDIO_REVIEW_POLL:-15}
+  deadline=$(( $(date +%s) + timeout ))
+  say "Reviewing $commit with $reviewer (up to ${timeout}s)"
+  while :; do
+    out=$(review_pane "$reviewer")
+    now=$(printf '%s\n' "$out" | grep -cE "REVIEW $commit: (PASS|CHANGES|BLOCK)[[:space:]]*\$" || true)
+    if [ "$now" -gt "$before" ]; then
+      # The verdict is the reviewer's last line; keep the up to 13 lines before it as findings.
+      block=$(printf '%s\n' "$out" | awk -v id="$commit" '
+        { line[NR] = $0 }
+        index($0, "REVIEW " id ": ") && $0 ~ /(PASS|CHANGES|BLOCK)[[:space:]]*$/ { last = NR }
+        END { for (i = (last > 14 ? last - 13 : 1); last && i <= last; i++) if (line[i] ~ /[^[:space:]]/) print line[i] }')
+      break
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      cmd_send "$reviewer" "@$architect" "REVIEW $commit: TIMEOUT" >/dev/null
+      ok "Told the architect: REVIEW $commit: TIMEOUT"
+      return 0
+    fi
+    sleep "$poll"
+  done
+  verdict=$(printf '%s\n' "$block" | tail -n 1 | sed 's/[[:space:]]*$//')
+  body=$(printf '%s\n' "$block" | sed '$d' | tr '\n' ' ' | tr -s ' ' | cut -c 1-600)
+  if [ -n "$body" ]; then cmd_send "$reviewer" "@$architect" "$verdict - $body" >/dev/null
+  else cmd_send "$reviewer" "@$architect" "$verdict" >/dev/null; fi
+  ok "Told the architect: $verdict"
 }
 
 version_at_least() { # have want
@@ -930,6 +1031,7 @@ case ${1:-help} in
   web)    shift; cmd_web "$@" ;;
   send)   shift; cmd_send "$@" ;;
   ask)    shift; cmd_ask "$@" ;;
+  review) shift; cmd_review "$@" ;;
   doctor) cmd_doctor ;;
   stop)   cmd_stop ;;
   help|-h|--help) usage ;;
