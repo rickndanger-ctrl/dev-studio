@@ -508,6 +508,10 @@ RV_REPLY=$T/reply.txt; RV_PANE=$T/pane.txt
 printf 'request @NONCE@\n1. src is fine\nREVIEW %s: CHANGES\n' "$COMMIT" > "$RV_REPLY"
 rm -f "$RV_PANE"
 export MOCK_PANE=$RV_PANE MOCK_REPLY=$RV_REPLY STUDIO_REVIEW_TIMEOUT=20 STUDIO_REVIEW_POLL=1
+ARCHTOKEN=$(jq -r '.["omac-architect"]' <<<"$RV_TOKENS")
+(cd "$PROJECT" && STUDIO_TOKEN=$ARCHTOKEN "$ROOT/bin/studio" send omac-architect @omac-worker-1 "job: change review-me.txt only, keep it one line")
+STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
+check "the architect's job note is kept for worker-1" grep -q "change review-me.txt only" "$PROJECT/.studio/briefs/omac-worker-1.txt"
 (cd "$PROJECT" && STUDIO_TOKEN=$W1TOKEN "$ROOT/bin/studio" send omac-worker-1 @omac-architect "done $COMMIT")
 STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
 check "router starts one review for done"    grep -q "\"kind\": \"review\".*\"commit\": \"$COMMIT\"" "$PROJECT/.studio/router.log"
@@ -516,6 +520,9 @@ check "verdict is queued to the architect"   grep -qs "\"to\": \"omac-architect\
 check "verdict carries the findings"         grep -qs "1. src is fine" "$PROJECT"/.studio/mail/outbox/*.json
 check "reviewer's verdict is signed"         grep -qs '"sig"' "$PROJECT"/.studio/mail/outbox/*.json
 check "reviewer prompt names the commit"     has "agent prompt omac-reviewer Review commit $COMMIT"
+check "the review prompt carries the job note" has "Job brief: [from @omac-architect] job: change review-me.txt only, keep it one line"
+check "the job note is kept under the commit" grep -q "change review-me.txt only" "$PROJECT/.studio/briefs/$COMMIT.txt"
+check "the worker's notes start over after done" test ! -s "$PROJECT/.studio/briefs/omac-worker-1.txt"
 : > "$MOCK_LOG"
 STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
 check "router verifies the reviewer's relay" grep -q '"from": "omac-reviewer".*"verified": true' "$PROJECT/.studio/router.log"
@@ -536,6 +543,7 @@ STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJEC
 check "a hand review is handled by the router, not routed" grep -q '"request": "review"' "$PROJECT/.studio/router.log"
 i=0; while [ $i -lt 30 ] && [ "$(relays_then CHANGES)" -le "$manual_before" ]; do sleep 1; i=$((i + 1)); done
 check "a hand review gets a verdict from the reviewer" test "$(relays_then CHANGES)" -gt "$manual_before"
+check "a hand review uses the job note kept for the commit" has "change review-me.txt only, keep it one line"
 : > "$MOCK_LOG"
 STUDIO_TOKENS=$RV_TOKENS STUDIO_ROUTER_ONCE=1 "$ROOT/bin/studio" router "$PROJECT" >/dev/null 2>&1 || true
 check "the hand review's relay is verified as from the reviewer" has "agent prompt omac-architect [studio relay · from @omac-reviewer] REVIEW $COMMIT: CHANGES"
@@ -546,6 +554,14 @@ export STUDIO_REVIEW_FROM_ROUTER=1
 check "review refuses a non-hash"            sh -c "! (cd '$PROJECT' && '$ROOT/bin/studio' review not-a-hash >/dev/null 2>&1)"
 (cd "$PROJECT" && "$ROOT/bin/studio" review 0000000 >/dev/null 2>&1) || true
 check "a missing commit is relayed as BLOCK" grep -qs "REVIEW 0000000: BLOCK" "$PROJECT"/.studio/mail/outbox/*.json
+printf 'second\n' > "$PROJECT/second.txt"
+git -C "$PROJECT" add second.txt
+git -C "$PROJECT" -c user.name=test -c user.email=test@example.com commit -q -m "job: add second.txt"
+C2=$(git -C "$PROJECT" rev-parse --short=7 HEAD)
+printf 'request @NONCE@\n1. looks fine\nREVIEW %s: PASS\n' "$C2" > "$T/reply2.txt"
+(cd "$PROJECT" && MOCK_PANE=$T/brief2.txt MOCK_REPLY=$T/reply2.txt STUDIO_REVIEW_POLL=1 STUDIO_REVIEW_TIMEOUT=10 "$ROOT/bin/studio" review "$C2" >/dev/null 2>&1) || true
+check "a commit with no job notes is reviewed from its message" has "Job brief: none recorded"
+check "its verdict is relayed"               grep -qs "REVIEW $C2: PASS" "$PROJECT"/.studio/mail/outbox/*.json
 unset MOCK_REPLY
 export MOCK_PANE=$T/silent.txt; rm -f "$MOCK_PANE"
 (cd "$PROJECT" && STUDIO_REVIEW_TIMEOUT=2 STUDIO_REVIEW_POLL=1 "$ROOT/bin/studio" review "$COMMIT" >/dev/null 2>&1) || true
@@ -657,6 +673,10 @@ time.sleep(2); r.reap_reviews()
 c = r.start_review(s, "omac-reviewer", "abc1234", tokens)
 assert c == "started", "a second request after the review ended did not start: %r" % c
 time.sleep(2); r.reap_reviews()
+r.keep_brief(s, "omac-worker-1", "omac-architect", "x" * 2000)
+r.keep_brief(s, "omac-worker-1", "omac-architect", "newest")
+kept = r.read_brief(s, "omac-worker-1")
+assert len(kept) <= 1200 and kept.endswith("newest\n"), "job notes not capped or not newest: %d" % len(kept)
 print("ok")
 PY
 check "a second request after a finished review starts again" python3 "$T/review_test.py" "$ROOT/router/router.py"

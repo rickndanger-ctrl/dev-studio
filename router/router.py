@@ -352,7 +352,33 @@ def review_request(msg, peers):
     return None, None, False
 
 
-def start_review(s, reviewer, commit, tokens):
+BRIEF_MAX = 1200    # characters of job notes kept per worker, and passed on to a review
+
+
+def brief_path(s, name):
+    return os.path.join(s.dir, "briefs", name + ".txt")
+
+
+def read_brief(s, name):
+    try:
+        with open(brief_path(s, name)) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def write_brief(s, name, text):
+    os.makedirs(os.path.join(s.dir, "briefs"), exist_ok=True)
+    with open(brief_path(s, name), "w") as f:
+        f.write(text[-BRIEF_MAX:])
+
+
+def keep_brief(s, worker, sender, text):
+    """Keep the newest job notes the architect or main session sent this worker, since its last done."""
+    write_brief(s, worker, read_brief(s, worker) + "[from @%s] %s\n" % (sender, text))
+
+
+def start_review(s, reviewer, commit, tokens, brief=""):
     """Start `studio review <commit>` in the background. The child gets the reviewer's own token
     (from the router's map, never from a pane), so its relay is verified as from the reviewer.
     A commit is skipped only while its review is still running; once that review has ended
@@ -364,7 +390,8 @@ def start_review(s, reviewer, commit, tokens):
     if running is not None and running.poll() is None:
         return "already running"
     project = os.path.dirname(s.dir)
-    env = dict(os.environ, STUDIO_SEAL=tokens.get(reviewer, ""), PWD=project, STUDIO_REVIEW_FROM_ROUTER="1")
+    env = dict(os.environ, STUDIO_SEAL=tokens.get(reviewer, ""), PWD=project, STUDIO_REVIEW_FROM_ROUTER="1",
+               STUDIO_REVIEW_BRIEF=brief[-BRIEF_MAX:])
     try:
         with open(os.path.join(s.dir, "review.log"), "a") as log:
             proc = subprocess.Popen([REVIEW_BIN, "review", commit], cwd=project, env=env, stdin=subprocess.DEVNULL,
@@ -398,9 +425,19 @@ def process(s, herdr, path, peers, tokens):
         row["unverified"] = why
     row.update(ev)
     s.write_log(row)
-    if commit:
-        s.write_log({"kind": "review", "id": msg["id"], "from": msg["from"], "commit": commit,
-                     "reviewer": reviewer, "note": start_review(s, reviewer, commit, tokens)})
+    first_pass = not msg.get("tries", 0)     # a held message comes back here: the review starts once
+    if commit and first_pass:
+        if manual:
+            brief = read_brief(s, commit)    # the job notes kept when this commit was reported done
+        else:
+            # A worker's done closes its job: the notes sent since its last done go to the review,
+            # are kept under the commit for a later manual review, and the worker's notes start over.
+            brief = read_brief(s, msg["from"])
+            write_brief(s, commit, brief)
+            write_brief(s, msg["from"], "")
+        s.write_log({"kind": "review", "id": msg["id"], "from": msg["from"], "commit": commit, "reviewer": reviewer,
+                     "brief": len(brief), "note": start_review(s, reviewer, commit, tokens, brief)})
+    sender_role = peers.get(msg["from"], {}).get("role", "")
     outcome = "delivered"
     for peer in decision["to"]:
         if peer == msg["from"]:
@@ -409,6 +446,8 @@ def process(s, herdr, path, peers, tokens):
         s.write_log({"kind": status, "id": msg["id"], "from": msg["from"], "to": peer, "code": code})
         if status != "delivered":
             outcome = status
+        elif verified and sender_role.startswith(("architect", "main")) and peers.get(peer, {}).get("role", "").startswith("worker"):
+            keep_brief(s, peer, msg["from"], decision["note"])
     if outcome == "held" and msg.get("tries", 0) < 20:
         msg["tries"] = msg.get("tries", 0) + 1
         msg["retry_at"] = now() + 15     # the peer is busy or blocked: try again later

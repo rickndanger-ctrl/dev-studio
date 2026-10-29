@@ -947,7 +947,7 @@ review_unlock() { # lock-dir: release it, but only if this review holds it
 # a worker sends "done <commit>". It always relays something: the verdict, or
 # "REVIEW <commit>: TIMEOUT" once STUDIO_REVIEW_TIMEOUT seconds pass. It never blocks anyone.
 cmd_review() {
-  local commit=${1:-} dir reviewer architect rev stat brief prompt out block verdict body timeout poll deadline lock nonce
+  local commit=${1:-} dir reviewer architect rev stat job msg prompt out block verdict body timeout poll deadline lock nonce
   [ -n "$commit" ] || die "Usage: studio review <commit>"
   case $commit in *[!0-9a-fA-F]*) die "A commit is a hash of 7 to 40 hex characters: $commit" ;; esac
   [ ${#commit} -ge 7 ] && [ ${#commit} -le 40 ] || die "A commit is a hash of 7 to 40 hex characters: $commit"
@@ -978,12 +978,15 @@ cmd_review() {
     return 0
   fi
   trap "review_unlock '$lock'" EXIT
-  # The job brief is the commit message; the stat summary says which files moved. The nonce
+  # The stat summary says which files moved. The nonce
   # ties this request to its own verdict, so an old verdict still on screen is never taken.
   stat=$(git -C "$PROJECT_DIR" show --stat --format= "$rev" 2>/dev/null | tail -n 25 | tr '\n' ';')
-  brief=$(git -C "$PROJECT_DIR" log -1 --format=%B "$rev" 2>/dev/null | tr '\n' ' ' | cut -c 1-1200)
+  # The job brief is the notes the router kept from the architect or main session (empty when
+  # there were none), and the commit message says what the commit claims to do.
+  job=$(printf '%s' "${STUDIO_REVIEW_BRIEF:-}" | tr '\n\r\t' '   ' | cut -c 1-1200)
+  msg=$(git -C "$PROJECT_DIR" log -1 --format=%B "$rev" 2>/dev/null | tr '\n' ' ' | cut -c 1-1200)
   nonce=r$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
-  prompt="Review commit $commit of $PROJECT_SLUG (request $nonce). Job brief (the commit message): $brief Changed files: $stat Read the whole change with git show $rev. Answer with short numbered findings (bugs, risky changes, scope drift, missing tests, private data), then end with exactly one line: REVIEW $commit: PASS, CHANGES or BLOCK."
+  prompt="Review commit $commit of $PROJECT_SLUG (request $nonce). Job brief: ${job:-none recorded, judge from the commit message} Commit message: $msg Changed files: $stat Read the whole change with git show $rev. Answer with short numbered findings (bugs, risky changes, scope drift, missing tests, private data), then end with exactly one line: REVIEW $commit: PASS, CHANGES or BLOCK."
   prompt=$(printf '%s' "$prompt" | tr '\n\r\t' '   ')
   if ! hd agent prompt "$reviewer" "$prompt" >/dev/null 2>&1; then
     review_unlock "$lock"
