@@ -27,6 +27,7 @@ import uuid
 
 JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+CLEF_MODEL = os.environ.get("CLEF_MODEL", "jev-latest")
 CLEF_URL = os.environ.get("CLEF_URL", "")
 ROUTER = os.environ.get("ROUTER", "jev")
 MAX_NOTE = 400  # characters a trimmed message keeps
@@ -161,6 +162,18 @@ def sender_token(studio_dir, sender):
 
 # --- judging -----------------------------------------------------------------
 
+def effective_router(studio_dir):
+    """Read the watchdog override for every decision, without restarting the router."""
+    try:
+        with open(os.path.join(studio_dir, "router-override")) as f:
+            override = f.readline().strip()
+            if override in ("jev", "clef", "rules"):
+                return override
+    except OSError:
+        pass
+    return ROUTER
+
+
 def questions_for(msg, peers):
     """Three narrow judgments over the same state, asked together."""
     criteria = {name: p.get("role", name) for name, p in peers.items() if name != msg["from"]}
@@ -189,10 +202,10 @@ def questions_for(msg, peers):
     }
 
 
-def ask_model(url, key, msg, peers):
+def ask_model(url, key, msg, peers, model=None):
     state = {"from": msg["from"], "addressed_to": msg["to"], "text": msg["text"][:4000],
              "peers": [{"name": n, "role": p.get("role", ""), "status": p.get("status", "")} for n, p in peers.items()]}
-    body = json.dumps({"model": JEV_MODEL, "state": state, "questions": questions_for(msg, peers)}).encode()
+    body = json.dumps({"model": model or JEV_MODEL, "state": state, "questions": questions_for(msg, peers)}).encode()
     req = urllib.request.Request(url, data=body, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
     t0 = now()
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -224,7 +237,10 @@ def judge(msg, peers, router=None):
             router = "rules"
         else:
             try:
-                answers, ev["ms"] = ask_model(url, key, msg, peers_live)
+                if router == "clef":
+                    answers, ev["ms"] = ask_model(url, key, msg, peers_live, model=CLEF_MODEL)
+                else:
+                    answers, ev["ms"] = ask_model(url, key, msg, peers_live)
             except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
                 ev["note"] = "%s unreachable (%s); used rules" % (router, str(e)[:80])
                 router = "rules"
@@ -451,7 +467,7 @@ def process(s, herdr, path, peers, tokens):
         # A manual request is for the router only: it starts the review and goes nowhere else.
         decision, ev = {"action": "drop", "to": [], "note": msg["text"]}, {"router": ROUTER, "request": "review"}
     else:
-        decision, ev = judge(msg, peers)
+        decision, ev = judge(msg, peers, router=effective_router(s.dir))
     row = {"kind": "route", "id": msg["id"], "from": msg["from"], "addressed": msg["to"], "decision": decision["action"],
            "to": decision["to"], "text": msg["text"][:120], "verified": verified}
     if not verified:
@@ -542,7 +558,7 @@ def cmd_daemon(a):
 def cmd_ask(a):
     s = Studio(a.studio)
     msg = {"id": "dry", "t": now(), "from": a.sender, "to": a.to.lstrip("@"), "text": a.text or sys.stdin.read()}
-    decision, ev = judge(msg, s.peers())
+    decision, ev = judge(msg, s.peers(), router=effective_router(s.dir))
     print(json.dumps({"decision": decision, "evidence": ev}, indent=2))
 
 
