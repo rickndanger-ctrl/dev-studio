@@ -167,7 +167,8 @@ def effective_router(studio_dir):
     try:
         with open(os.path.join(studio_dir, "router-override")) as f:
             override = f.readline().strip()
-            if override in ("jev", "clef", "rules"):
+            order = ("jev", "clef", "rules")
+            if override in order and ROUTER in order and order.index(override) >= order.index(ROUTER):
                 return override
     except OSError:
         pass

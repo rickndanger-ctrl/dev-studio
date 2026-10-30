@@ -15,6 +15,18 @@ spec.loader.exec_module(router)
 
 
 class OverrideTest(unittest.TestCase):
+    def test_override_only_steps_down_from_configured_router(self):
+        with tempfile.TemporaryDirectory() as studio:
+            path = os.path.join(studio, "router-override")
+            for configured, override, expected in (("rules", "jev", "rules"), ("rules", "clef", "rules"),
+                                                    ("clef", "jev", "clef"), ("clef", "rules", "rules"),
+                                                    ("jev", "clef", "clef"), ("jev", "rules", "rules")):
+                with self.subTest(configured=configured, override=override):
+                    with open(path, "w") as f:
+                        f.write(override + "\nreason\n")
+                    with mock.patch.object(router, "ROUTER", configured):
+                        self.assertEqual(router.effective_router(studio), expected)
+
     def test_ask_observes_override_and_restores_configured_router(self):
         with tempfile.TemporaryDirectory() as project:
             studio = os.path.join(project, ".studio")
