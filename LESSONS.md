@@ -111,3 +111,24 @@ because `git log -1` on Mini 2 showed a commit that was not mine.
 **Rule:** a folder that is a git repo on another machine is updated with `git pull`, never by
 copying a tree over it. Before any copy-deploy, check `git log -1` and `git status` on the
 target. And brace variables before a colon in zsh (`${ws}:t2`): `$ws:t2` is a history modifier.
+
+## 2026-10-28 — "Delivered" to a Codex worker that could not read it
+**What happened:** The router logged the architect's review request to the Codex worker as
+`delivered`, and the team waited on it for a long time. The worker's pane showed why: a Codex
+account pop-up ("Set up Advanced Account Security… esc to dismiss") had the focus, so the typed
+request never reached the prompt. Before that restart, the same worker had exited over its sandbox
+flag. Both times the team was waiting on a worker that could not answer.
+
+**Rule:** `delivered` means typed, not read. When a teammate is silent past its usual time, read its
+pane (`herdr pane read <pane>`) before waiting longer. A pop-up that says "esc to dismiss" may be
+dismissed; an account or security setup is the owner's decision: never complete it for him.
+
+## 2026-10-29 — A fire-and-forget child wrote test data into the real state folder
+**What happened:** The placement hook started `bin/place` in the background so dispatch and localq never
+wait. Tests passed, but the real `state/placement/decisions.jsonl` filled with 62 fixture rows: the detached
+child outlived the test, the test deleted its temp config, and the child fell back to the default config and
+the real state folder. A second copy of the same leak came from a test-started viewer's report loop.
+
+**Rule:** a detached child gets everything it needs as a snapshot at launch (config, absolute state dir),
+never a path to a temp file the parent may delete. `test/ci.sh` fails if anything under the real state
+folder is created or changed during a run.
