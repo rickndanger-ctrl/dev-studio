@@ -53,9 +53,10 @@ class Studio:
         self.outbox = os.path.join(path, "mail", "outbox")
         self.delivered = os.path.join(path, "mail", "delivered")
         self.held = os.path.join(path, "mail", "held")
+        self.retry = os.path.join(path, "mail", "retry")   # the router's own notes on held messages
         self.log = os.path.join(path, "router.log")
         self.peers_file = os.path.join(path, "peers.json")
-        for d in (self.outbox, self.delivered, self.held):
+        for d in (self.outbox, self.delivered, self.held, self.retry):
             os.makedirs(d, exist_ok=True)
 
     def peers(self):
@@ -457,6 +458,28 @@ def reap_reviews():
         del REVIEWS[commit]
 
 
+def retry_path(s, msg):
+    return os.path.join(s.retry, msg["id"] + ".json")
+
+
+def read_retry(s, msg):
+    """What the router decided and who already has a held message, or None on its first pass.
+    It lives outside the outbox, which the agents write, so a sender cannot pick its own
+    recipients or skip the review by writing them into its message."""
+    try:
+        with open(retry_path(s, msg)) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("key") != retry_key(msg):
+        return None     # another message with the same id: start it fresh
+    return state
+
+
+def retry_key(msg):
+    return hashlib.sha256(json.dumps([msg["from"], msg["to"], msg["text"]]).encode()).hexdigest()
+
+
 def process(s, herdr, path, peers, tokens):
     with open(path) as f:
         msg = json.load(f)
@@ -464,7 +487,11 @@ def process(s, herdr, path, peers, tokens):
         raise ValueError("not a studio message")
     verified, why = verify_sender(msg, tokens, s)
     commit, reviewer, manual = review_request(msg, peers) if verified else (None, None, False)
-    if manual:
+    state = read_retry(s, msg)
+    if state:
+        # A held message comes back: same recipients and note as its first pass, no new question to the router.
+        decision, ev = state["decision"], dict(state["ev"], retry=msg.get("tries", 0))
+    elif manual:
         # A manual request is for the router only: it starts the review and goes nowhere else.
         decision, ev = {"action": "drop", "to": [], "note": msg["text"]}, {"router": ROUTER, "request": "review"}
     else:
@@ -475,7 +502,7 @@ def process(s, herdr, path, peers, tokens):
         row["unverified"] = why
     row.update(ev)
     s.write_log(row)
-    first_pass = not msg.get("tries", 0)     # a held message comes back here: the review starts once
+    first_pass = state is None     # a held message comes back here: the review starts once
     if commit and first_pass:
         if manual:
             brief = read_brief(s, commit)    # the job notes kept when this commit was reported done
@@ -489,18 +516,24 @@ def process(s, herdr, path, peers, tokens):
                      "brief": len(brief), "note": start_review(s, reviewer, commit, tokens, brief)})
     sender_role = peers.get(msg["from"], {}).get("role", "")
     outcome = "delivered"
+    done = list(state["done"]) if state else []
     for peer in decision["to"]:
-        if peer == msg["from"]:
-            continue
+        if peer == msg["from"] or peer in done:
+            continue     # a peer that already has this message is not prompted with it again
         status, code = deliver(herdr, peer, msg["from"], decision["note"], verified)
         s.write_log({"kind": status, "id": msg["id"], "from": msg["from"], "to": peer, "code": code})
         if status != "delivered":
             outcome = status
-        elif verified and sender_role.startswith(("architect", "main")) and peers.get(peer, {}).get("role", "").startswith("worker"):
+            continue
+        done.append(peer)
+        if verified and sender_role.startswith(("architect", "main")) and peers.get(peer, {}).get("role", "").startswith("worker"):
             keep_brief(s, peer, msg["from"], decision["note"])
     if outcome == "held" and msg.get("tries", 0) < 20:
         msg["tries"] = msg.get("tries", 0) + 1
         msg["retry_at"] = now() + 15     # the peer is busy or blocked: try again later
+        with open(retry_path(s, msg), "w") as f:
+            json.dump({"key": retry_key(msg), "decision": decision, "ev": {k: v for k, v in ev.items() if k != "retry"},
+                       "done": done}, f)
         with open(path, "w") as f:
             json.dump(msg, f)
         return
@@ -511,6 +544,10 @@ def process(s, herdr, path, peers, tokens):
     if os.path.exists(dest):
         dest += "." + uuid.uuid4().hex[:6]   # never overwrite an archived message
     os.rename(path, dest)
+    try:
+        os.remove(retry_path(s, msg))
+    except OSError:
+        pass
 
 
 def cmd_daemon(a):

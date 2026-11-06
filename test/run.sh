@@ -691,6 +691,7 @@ assert len(kept) <= 1200 and kept.endswith("newest\n"), "job notes not capped or
 print("ok")
 PY
 check "a second request after a finished review starts again" python3 "$T/review_test.py" "$ROOT/router/router.py"
+check "a held broadcast retries only the held peer" python3 "$ROOT/test/test_router_retry.py"
 
 echo "Trust: a codex team with a claude reviewer still gets the claude trust step"
 mkdir -p "$HOME/Developer/Trusty" && git -C "$HOME/Developer/Trusty" init -q
